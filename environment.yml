@@ -1,0 +1,13 @@
+name: base
+channels:
+  - pyviz
+  - conda-forge
+dependencies:
+  - numpy
+  - pandas
+  - scipy
+  - pymc3
+  - holoviews
+  - bokeh
+  - mkl-service
+  - tqdm
