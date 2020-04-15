@@ -11,3 +11,5 @@ dependencies:
   - bokeh
   - mkl-service
   - tqdm
+  - ipywidgets
+  - nevergrad

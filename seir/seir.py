@@ -69,14 +69,17 @@ Some thoughts:
 - This also applies to fractions of mild, severe, and critical cases.
 - And to typical duration of critical cases.
 """
-
+import os
 from collections import OrderedDict, namedtuple
 from functools import partial
+import multiprocessing as mp
 
+import nevergrad as ng
 import numpy as np
 import pandas as pd
 import pymc3 as pm
 from scipy.integrate import odeint
+from tqdm import tqdm
 
 import util
 from data import (
@@ -93,6 +96,9 @@ def to_sim_day(date):
     return np.array((date - DATE_OF_SIM_TIME_ZERO).days, dtype=float)
 
 
+SIM_TIME = to_sim_day(pd.date_range(DATE_OF_SIM_TIME_ZERO, lombardia['data'].max(), freq='1d'))
+I_FIRST_OBS = int(to_sim_day(lombardia['data'].min()))
+
 # These are switch points in our model at which times the interaction rate between people without detected cases changes
 T1 = to_sim_day(DATE_OF_LOMBARDY_LOCKDOWN)
 T2 = to_sim_day(DATE_OF_SHUTDOWN_OF_NONESSENTIALS)
@@ -103,30 +109,34 @@ PARAMS = OrderedDict(
     t0=Param(
         DATE_OF_SIM_TIME_ZERO + pd.to_timedelta('1d'),
         DATE_OF_LOMBARDY_LOCKDOWN - pd.to_timedelta('1d'),
-        pd.to_datetime('2 Feb 2020'),
+        pd.to_datetime('1 Feb 2020'),
         'Date of first possible transmission',
     ),
-    e0=Param(0, 1e4, 1e3, 'Exposed population as of t0'),
-    beta0_a=Param(0, 2, 0.5, 'Transmission rate from unknown cases before 8 March'),
-    beta0_b=Param(0, 1, 0.15, 'Transmission rate from unknown cases after 8 March'),
-    beta0_c=Param(0, 1, 0.05, 'Transmission rate from unknown cases after 21 March'),
-    beta0d=Param(0, 1, 0.15, 'Transmission rate from known cases with mild symptoms'),
+    e0=Param(0, 100, 10, 'Exposed population as of t0'),
+    beta0_a=Param(0, 2, 0.33, 'Transmission rate from unknown cases before 8 March'),
+    beta0_b=Param(0, 1, 0.09, 'Transmission rate from unknown cases after 8 March'),
+    beta0_c=Param(0, 1, 0.03, 'Transmission rate from unknown cases after 21 March'),
+    beta0d=Param(0, 1, 0.05, 'Transmission rate from known cases with mild symptoms'),
     beta1=Param(0, 1, 0.05, 'Transmission rate from known cases with severe symptoms'),
-    beta2=Param(0, 1, 0.05, 'Transmission rate from known cases with critical symptoms'),
-    sigmae=Param(0, 1, 1/5.1, 'Progression rate for development of mild symptoms'),
-    sigma0=Param(0, 1, 1/6, 'Progression rate for development of severe symptoms when undetected'),
-    sigma0d=Param(0, 1, 1/6, 'Progression rate for development of severe symptoms when detected'),
-    sigma1=Param(0, 1, 1/4.5, 'Progression rate for development of critical symptoms'),
-    theta=Param(0, 0.1, 0.002, 'Rate of testing for undetected cases with mild symptoms'),
-    mu0=Param(0, 0.01, 0.0004, 'Fatality rate for undetected mild cases'),
-    mu0d=Param(0, 0.01, 0.0003, 'Fatality rate for detected mild cases'),
-    mu1=Param(0, 0.01, 0.001, 'Fatality rate for severe cases'),
-    mu2=Param(0, 0.01, 0.002, 'Fatality rate for critical cases'),
-    gamma0=Param(0, 0.01, 0.001, 'Recovery rate for undetected mild cases'),
-    gamma0d=Param(0, 0.01, 0.001, 'Recovery rate for detected mild cases'),
-    gamma1=Param(0, 0.01, 0.001, 'Recovery rate for severe cases'),
-    gamma2=Param(0, 0.01, 0.001, 'Recovery rate for critical cases'),
+    beta2=Param(0, 1, 0.01, 'Transmission rate from known cases with critical symptoms'),
+    sigmae=Param(0, 1, 0.1, 'Progression rate for development of mild symptoms'),
+    sigma0=Param(0, 1, 0.2, 'Progression rate for development of severe symptoms when undetected'),
+    sigma0d=Param(0, 1, 0.01, 'Progression rate for development of severe symptoms when detected'),
+    sigma1=Param(0, 1, 0.02, 'Progression rate for development of critical symptoms'),
+    theta=Param(0, 0.5, 0.1, 'Rate of testing for undetected cases with mild symptoms'),
+    mu0=Param(0, 0.1, 0.01, 'Fatality rate for undetected mild cases'),
+    mu0d=Param(0, 0.1, 0.01, 'Fatality rate for detected mild cases'),
+    mu1=Param(0, 0.1, 0.01, 'Fatality rate for severe cases'),
+    mu2=Param(0, 0.1, 0.006, 'Fatality rate for critical cases'),
+    gamma0=Param(0, 0.1, 0.015, 'Recovery rate for undetected mild cases'),
+    gamma0d=Param(0, 0.1, 0.01, 'Recovery rate for detected mild cases'),
+    gamma1=Param(0, 0.1, 0.03, 'Recovery rate for severe cases'),
+    gamma2=Param(0, 0.5, 0.1, 'Recovery rate for critical cases'),
 )
+
+
+def naive_ternary(conditional, if_true, if_false):
+    return if_false + (if_true - if_false) * conditional
 
 
 def seir(state, t, params, ternary=pm.math.switch):
@@ -176,10 +186,11 @@ def seir(state, t, params, ternary=pm.math.switch):
 
 
 def run_odeint(t, e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0,
-               mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2):
+               mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2, convert_times=True):
 
-    t = to_sim_day(pd.to_datetime(t))
-    t0 = to_sim_day(pd.to_datetime(t0))
+    if convert_times:
+        t = to_sim_day(pd.to_datetime(t))
+        t0 = to_sim_day(pd.to_datetime(t0))
 
     state0 = POPULATION_OF_LOMBARDY - e0, e0, 0, 0, 0, 0, 0, 0, 0, 0
     params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d,
@@ -195,44 +206,48 @@ def run_odeint(t, e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigma
 
 
 def simple_obs_model(name, simulated, observed):
-    obs_sd0 = pm.Exponential(name + '_obs_sd0', 10.0)
+    obs_sd0 = pm.Exponential(name + '_obs_sd0', 100.0)
     obs_sd1 = pm.Exponential(name + '_obs_sd1', 0.1)
     pm.Normal(name + '_obs', simulated, obs_sd0 + obs_sd1 * simulated, observed=observed)
 
 
-def fit(**new_kwargs):
+def create_model():
 
-    t = to_sim_day(pd.date_range(DATE_OF_SIM_TIME_ZERO, lombardia['data'].max(), freq='1d'))
-    i_first_obs = int(to_sim_day(lombardia['data'].min()))
+    with pm.Model() as model:
 
-    with pm.Model():
-        beta0_a = pm.Lognormal('beta0_a', mu=0.5, sd=0.5, testval=0.5)
-        beta0_b = pm.Lognormal('beta0_b', mu=0.5, sd=0.5, testval=0.5)
-        beta0_c = pm.Lognormal('beta0_c', mu=0.5, sd=0.5, testval=0.5)
-        beta0d = pm.Lognormal('beta0d', mu=0.17, sd=0.5)
-        beta1 = pm.Lognormal('beta1', mu=0.17, sd=0.5)
-        beta2 = pm.Lognormal('beta2', mu=0.02, sd=0.5)
+        # Transmission rates
+        beta0_a = pm.Lognormal('beta0_a', mu=0.33, sd=1)
+        beta0_b = pm.Lognormal('beta0_b', mu=0.07, sd=1)
+        beta0_c = pm.Lognormal('beta0_c', mu=0.05, sd=1)
+        beta0d = pm.Lognormal('beta0d', mu=0.15, sd=1)
+        beta1 = pm.Lognormal('beta1', mu=0.02, sd=1)
+        beta2 = pm.Lognormal('beta2', mu=0.05, sd=1)
 
-        sigmae = pm.Beta('sigmae', mu=0.2, sd=0.02)
-        sigma0 = pm.Beta('sigma0', mu=0.2, sd=0.02)
-        sigma0d = pm.Beta('sigma0d', mu=0.2, sd=0.02)
-        sigma1 = pm.Beta('sigma1', mu=0.2, sd=0.02)
+        # Progression rates
+        sigmae = pm.Lognormal('sigmae', mu=np.log(0.2), sd=1)
+        sigma0 = pm.Lognormal('sigma0', mu=np.log(0.05), sd=1)
+        sigma0d = pm.Lognormal('sigma0d', mu=np.log(0.04), sd=1)
+        sigma1 = pm.Lognormal('sigma1', mu=np.log(0.02), sd=1)
 
-        gamma0 = pm.Beta('gamma0', mu=0.08, sigma=0.02)
-        gamma0d = pm.Beta('gamma0d', mu=0.08, sigma=0.02)
-        gamma1 = pm.Beta('gamma1', mu=0.08, sigma=0.02)
-        gamma2 = pm.Beta('gamma2', mu=0.08, sigma=0.02)
+        # Recovery rates
+        gamma0 = pm.Lognormal('gamma0', mu=np.log(0.01), sd=1)
+        gamma0d = pm.Lognormal('gamma0d', mu=np.log(0.01), sd=1)
+        gamma1 = pm.Lognormal('gamma1', mu=np.log(0.01), sd=1)
+        gamma2 = pm.Lognormal('gamma2', mu=np.log(0.01), sd=1)
 
-        mu0 = pm.Beta('mu0', mu=0.0004, sd=0.0002)
-        mu0d = pm.Beta('mu0d', mu=0.0004, sd=0.0002)
-        mu1 = pm.Beta('mu1', mu=0.0004, sd=0.0002)
-        mu2 = pm.Beta('mu2', mu=0.0004, sd=0.0002)
+        # Fatality rates
+        mu0 = pm.Lognormal('mu0', mu=np.log(0.0007), sd=1)
+        mu0d = pm.Lognormal('mu0d', mu=np.log(0.0006), sd=1)
+        mu1 = pm.Lognormal('mu1', mu=np.log(0.003), sd=1)
+        mu2 = pm.Lognormal('mu2', mu=np.log(0.005), sd=1)
 
-        theta = pm.Uniform('theta', 0.0, 1.0, testval=0.004)
+        # Testing rate
+        theta = pm.Lognormal('theta', mu=np.log(0.002), sd=1)
 
-        t0 = pm.Uniform('t0', to_sim_day(pd.to_datetime('14 Jan 2020')), to_sim_day(pd.to_datetime('1 Feb 2020')))
-
-        e0 = pm.Lognormal('e0', np.log(1000), 2)
+        # Initial conditions
+        t0 = pm.Uniform('t0', to_sim_day(pd.to_datetime('24 Jan 2020')),
+                        to_sim_day(pd.to_datetime('14 Feb 2020')))
+        e0 = pm.Lognormal('e0', np.log(100), 2)
         s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - e0)
 
         state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
@@ -240,19 +255,131 @@ def fit(**new_kwargs):
                   mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
 
         # Dynamics model
-        ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=t, n_states=len(state0), n_theta=len(params))
+        ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
         states = ode(state0, params)
+
         s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(len(state0))]
 
         # Observation models (keep it simple)
-        simple_obs_model('c', (i0d + i1 + i2 + fd + rd)[i_first_obs:], lombardia['totale_casi'])
-        simple_obs_model('f', fd[i_first_obs:], lombardia['deceduti'])
-        simple_obs_model('i0d', i0d[i_first_obs:], lombardia['isolamento_domiciliare'])
-        simple_obs_model('i1', i1[i_first_obs:], lombardia['ricoverati_con_sintomi'])
-        simple_obs_model('i2', i2[i_first_obs:], lombardia['terapia_intensiva'])
-        simple_obs_model('rd', rd[i_first_obs:], lombardia['dimessi_guariti'])
+        simple_obs_model('c', (i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi'])
+        simple_obs_model('f', fd[I_FIRST_OBS:], lombardia['deceduti'])
+        simple_obs_model('i0d', i0d[I_FIRST_OBS:], lombardia['isolamento_domiciliare'])
+        simple_obs_model('i1', i1[I_FIRST_OBS:], lombardia['ricoverati_con_sintomi'])
+        simple_obs_model('i2', i2[I_FIRST_OBS:], lombardia['terapia_intensiva'])
+        simple_obs_model('rd', rd[I_FIRST_OBS:], lombardia['dimessi_guariti'])
 
-        kwargs = dict(draws=100, tune=100, target_accept=0.234, compute_convergence_checks=False)
-        kwargs.update(new_kwargs)
-        trace = pm.sample(**kwargs)
-        return trace
+        return model
+
+
+def create_model_from_guess(best_guess):
+
+    with pm.Model() as model:
+
+        priors = {k: pm.Lognormal(k, mu=v, sd=0.2, testval=v) for k, v in best_guess.items()}
+
+        s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - priors['e0'])
+        state0 = s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0
+        params = [priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+                                      'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
+                                      'gamma0d', 'gamma1', 'gamma2')]
+
+        # Dynamics model
+        ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
+        states = ode(state0, params)
+
+        s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(len(state0))]
+
+        # Observation models (keep it simple)
+        simple_obs_model('c', (i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi'])
+        simple_obs_model('f', fd[I_FIRST_OBS:], lombardia['deceduti'])
+        simple_obs_model('i0d', i0d[I_FIRST_OBS:], lombardia['isolamento_domiciliare'])
+        simple_obs_model('i1', i1[I_FIRST_OBS:], lombardia['ricoverati_con_sintomi'])
+        simple_obs_model('i2', i2[I_FIRST_OBS:], lombardia['terapia_intensiva'])
+        simple_obs_model('rd', rd[I_FIRST_OBS:], lombardia['dimessi_guariti'])
+
+        return model
+
+
+def compute_trace_score(simulated, observed):
+    simulated = np.log(1 + simulated)
+    observed = np.log(1 + observed)
+    diff = (simulated - observed)
+    diff2 = diff * diff
+    return sum(diff2)
+
+
+def compute_overall_score(**kwargs):
+    """Compute goodness-of-fit score suitable for nevergrad optimization"""
+    s, e, i0, i0d, i1, i2, f, fd, r, rd = run_odeint(SIM_TIME, convert_times=False, **kwargs)
+    return (
+        compute_trace_score((i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi']) +
+        compute_trace_score(fd[I_FIRST_OBS:], lombardia['deceduti']) +
+        compute_trace_score(i0d[I_FIRST_OBS:], lombardia['isolamento_domiciliare']) +
+        compute_trace_score(i1[I_FIRST_OBS:], lombardia['ricoverati_con_sintomi']) +
+        compute_trace_score(i2[I_FIRST_OBS:], lombardia['terapia_intensiva']) +
+        compute_trace_score(rd[I_FIRST_OBS:], lombardia['dimessi_guariti'])
+    )
+
+
+def fit_nevergrad_model(budget=12_000):
+
+    parameters = {
+        name:
+            ng.p.Scalar(lower=param.min, upper=param.max, init=param.default)
+            if isinstance(param.default, (int, float)) else
+            ng.p.Scalar(lower=to_sim_day(param.min), upper=to_sim_day(param.max), init=to_sim_day(param.default))
+        for name, param in PARAMS.items()
+    }
+
+    instrumentation = ng.p.Instrumentation(**parameters)
+
+    # Run the score function once to catch bugs before dispatching to the multiprocessing Pool
+    # That makes debugging much easier.
+    args, kwargs = instrumentation.value
+    trial_score = compute_overall_score(**kwargs)
+
+    # optimizer = ng.optimizers.TwoPointsDE(
+    #     instrumentation, budget=budget, num_workers=1,
+    # )
+    # optimizer.minimize(compute_overall_score)
+
+    num_processes = os.cpu_count()
+    optimizer = ng.optimizers.ParaPortfolio(
+        instrumentation, budget=budget, num_workers=num_processes,
+    )
+    with mp.Pool(processes=num_processes) as pool, tqdm(total=budget) as pbar:
+        n_complete = 0
+        best_score = trial_score
+        best_kwargs = kwargs
+        smooth_score = trial_score
+        smoothing = 0.3
+        running = []
+        while n_complete < optimizer.budget:
+            # Add new jobs
+            while (
+                    len(running) < optimizer.num_workers
+                    and len(running) + n_complete < optimizer.budget
+            ):
+                candidate = optimizer.ask()
+                job = pool.apply_async(func=compute_overall_score, args=candidate.args, kwds=candidate.kwargs)
+                running.append((candidate, job))
+            # Collect finished jobs
+            still_running = []
+            for candidate, job in running:
+                if job.ready():
+                    result = job.get()
+                    optimizer.tell(candidate, result)
+                    if result < best_score:
+                        best_score = result
+                        best_kwargs = candidate.kwargs
+                    smooth_score = smooth_score * (1 - smoothing) + result * smoothing
+                    pbar.set_description(f'Best: {best_score:.4g}, Smooth: {smooth_score:.4g}, Last: {result:.4g}',
+                                         refresh=False)
+                    pbar.update()
+                    n_complete += 1
+                else:
+                    still_running.append((candidate, job))
+            running = still_running
+
+    args, kwargs = optimizer.provide_recommendation().value
+    return kwargs, best_kwargs
