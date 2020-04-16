@@ -59,7 +59,7 @@ Fatalities (dimessi_guariti) are fd.
 i0d cases are put in home isolation (isolamento_domiciliare).
 i1 cases are admitted into the hospital (ricoverati_con_sintomi).
 i2 cases are sent to ICU (terapia_intensiva).
-rd cases are marked recovered (dimessi_guariti).
+rd cases are marked recovered (dimessi_guariti). TODO: Should this be just i1 and i2 recoveries?
 We also have data for total tests administered (tamponi) and total patients hospitalized (totale_ospedalizzati).
 
 For simplicity, we model the observation errors generically as Gaussian noise with constant plus linear scaling sigma.
@@ -79,6 +79,9 @@ import numpy as np
 import pandas as pd
 import pymc3 as pm
 from scipy.integrate import odeint
+import theano.tensor as tt
+from theano.compile.ops import as_op
+import theano
 from tqdm import tqdm
 
 import util
@@ -179,8 +182,14 @@ def seir(state, t, params, ternary=pm.math.switch):
     di2 = symptoms_severe_to_critical - recovered_critical - died_critical
     df = died_mild_undetected
     dfd = died_mild_detected + died_critical + died_severe
-    dr = recovered_mild_undetected
-    drd = recovered_mild_detected + recovered_severe + recovered_critical
+
+    # # If data for recovered individuals includes those that recovered at home
+    # dr = recovered_mild_undetected
+    # drd = recovered_mild_detected + recovered_severe + recovered_critical
+
+    # If data for recovered individuals does NOT include those that recovered at home
+    dr = recovered_mild_undetected + recovered_mild_detected
+    drd = recovered_severe + recovered_critical
 
     return ds, de, di0, di0d, di1, di2, df, dfd, dr, drd
 
@@ -200,7 +209,7 @@ def run_odeint(t, e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigma
         partial(seir, ternary=util.ternary),
         t=t,
         y0=state0,
-        args=(params,)
+        args=(params,),
     )
     return [y for y in states.T]  # one array per state
 
@@ -209,6 +218,31 @@ def simple_obs_model(name, simulated, observed):
     obs_sd0 = pm.Exponential(name + '_obs_sd0', 100.0)
     obs_sd1 = pm.Exponential(name + '_obs_sd1', 0.1)
     pm.Normal(name + '_obs', simulated, obs_sd0 + obs_sd1 * simulated, observed=observed)
+
+
+# @as_op(itypes=[tt.dscalar] * 21, otypes=[tt.dvector])
+# def custom_ode_op(e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+#                   sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2):
+#     s0 = POPULATION_OF_LOMBARDY - e0
+#     state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
+#     params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+#               sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
+#     return odeint(
+#         seir,
+#         # partial(seir, ternary=util.ternary),
+#         t=SIM_TIME,
+#         y0=state0,
+#         args=(params,),
+#     )
+
+@as_op(itypes=[tt.dvector, tt.dvector], otypes=[tt.dmatrix])
+def custom_ode_op(state0, params):
+    return odeint(
+        partial(seir, ternary=util.ternary),
+        t=SIM_TIME,
+        y0=state0,
+        args=(params,),
+    )
 
 
 def create_model():
@@ -250,13 +284,19 @@ def create_model():
         e0 = pm.Lognormal('e0', np.log(100), 2)
         s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - e0)
 
-        state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
-        params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0,
-                  mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
-
-        # Dynamics model
+        # state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
+        # params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+        #           sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
+        #
+        # # Dynamics model
         ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
-        states = ode(state0, params)
+        # states = ode(state0, params)
+
+        state0 = pm.math.concatenate([s0, e0, 0, 0, 0, 0, 0, 0, 0, 0])
+        params = pm.math.concatenate([t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+                                      sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2])
+        # Dynamics model
+        states = custom_ode_op(state0, params)
 
         s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(len(state0))]
 
@@ -273,21 +313,31 @@ def create_model():
 
 def create_model_from_guess(best_guess):
 
+    # Get rid of any zeros
+    best_guess = {k: v or 1e-3 for k, v in best_guess.items()}
+
     with pm.Model() as model:
 
-        priors = {k: pm.Lognormal(k, mu=v, sd=0.2, testval=v) for k, v in best_guess.items()}
+        priors = {k: pm.Lognormal(k, mu=v, sd=0.6, testval=v) for k, v in best_guess.items()}
 
         s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - priors['e0'])
-        state0 = s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0
-        params = [priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+
+        # state0 = s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0
+        # params = [priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+        #                               'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
+        #                               'gamma0d', 'gamma1', 'gamma2')]
+        # # Dynamics model
+        # ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
+        # states = ode(state0, params)
+
+        state0 = pm.math.stack([s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0])
+        params = pm.math.stack([priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
                                       'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
-                                      'gamma0d', 'gamma1', 'gamma2')]
-
+                                      'gamma0d', 'gamma1', 'gamma2')])
         # Dynamics model
-        ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
-        states = ode(state0, params)
+        states = custom_ode_op(state0, params)
 
-        s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(len(state0))]
+        s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(10)]
 
         # Observation models (keep it simple)
         simple_obs_model('c', (i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi'])

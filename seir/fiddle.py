@@ -22,22 +22,12 @@ slider_type_map = {
     pd.Timestamp: (pn.widgets.DateSlider, None),
 }
 
-SLIDERS = OrderedDict()
-for name, param in seir.PARAMS.items():
-    slider_type, fmt = slider_type_map[type(param.default)]
-    if fmt:
-        SLIDERS[name] = slider_type(name=param.description, start=param.min, end=param.max, value=param.default,
-                                    step=(param.max - param.min)/101, format=fmt)
-    else:
-        SLIDERS[name] = slider_type(name=param.description, start=param.min, end=param.max, value=param.default)
-
 
 def disable_logo(plot, element):
     """Remove Bokeh logo from plots"""
     plot.state.toolbar.logo = None
 
 
-@pn.depends(**{k: v.param.value for k, v in SLIDERS.items()})
 def draw(**kwargs):
 
     t = pd.date_range(seir.DATE_OF_SIM_TIME_ZERO, '1 May 2020', freq='1d')
@@ -138,17 +128,28 @@ def draw(**kwargs):
 
 def fiddle(**kwargs):
 
+    sliders = OrderedDict()
+    for name, param in seir.PARAMS.items():
+        slider_type, fmt = slider_type_map[type(param.default)]
+        if fmt:
+            sliders[name] = slider_type(name=param.description, start=param.min, end=param.max, value=param.default,
+                                        step=(param.max - param.min) / 101, format=fmt)
+        else:
+            sliders[name] = slider_type(name=param.description, start=param.min, end=param.max, value=param.default)
+
+    fiddle_draw = pn.depends(**{k: v.param.value for k, v in sliders.items()})(draw)
+
     # Override default values with kwargs
     for k, v in kwargs.items():
-        SLIDERS[k].value = v
+        sliders[k].value = v
 
-    n_sliders = len(SLIDERS)
-    slider_values = list(SLIDERS.values())
+    n_sliders = len(sliders)
+    slider_values = list(sliders.values())
 
     gspec = pn.GridSpec(sizing_mode='stretch_both')
     gspec[0, 0] = pn.WidgetBox(*slider_values[:n_sliders//2])
     gspec[0, 1] = pn.WidgetBox(*slider_values[n_sliders//2:])
-    gspec[1, :] = hv.DynamicMap(draw)
+    gspec[1, :] = hv.DynamicMap(fiddle_draw)
     return gspec
 
 
