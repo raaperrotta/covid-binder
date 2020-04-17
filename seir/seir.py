@@ -81,7 +81,6 @@ import pymc3 as pm
 from scipy.integrate import odeint
 import theano.tensor as tt
 from theano.compile.ops import as_op
-import theano
 from tqdm import tqdm
 
 import util
@@ -91,8 +90,9 @@ from data import (
     DATE_OF_LOMBARDY_LOCKDOWN,
     DATE_OF_SHUTDOWN_OF_NONESSENTIALS,
 )
+from ode import DifferentialEquation
 
-DATE_OF_SIM_TIME_ZERO = pd.to_datetime('1 Jan 2020')
+DATE_OF_SIM_TIME_ZERO = pd.to_datetime('1 Feb 2020')
 
 
 def to_sim_day(date):
@@ -109,13 +109,14 @@ T2 = to_sim_day(DATE_OF_SHUTDOWN_OF_NONESSENTIALS)
 Param = namedtuple('Param', ['min', 'max', 'default', 'description'])
 
 PARAMS = OrderedDict(
-    t0=Param(
-        DATE_OF_SIM_TIME_ZERO + pd.to_timedelta('1d'),
-        DATE_OF_LOMBARDY_LOCKDOWN - pd.to_timedelta('1d'),
-        pd.to_datetime('1 Feb 2020'),
-        'Date of first possible transmission',
-    ),
+    # t0=Param(
+    #     DATE_OF_SIM_TIME_ZERO + pd.to_timedelta('1d'),
+    #     DATE_OF_LOMBARDY_LOCKDOWN - pd.to_timedelta('1d'),
+    #     pd.to_datetime('1 Feb 2020'),
+    #     'Date of first possible transmission',
+    # ),
     e0=Param(0, 100, 10, 'Exposed population as of t0'),
+    i0=Param(0, 100, 10, 'Infectious population as of t0'),
     beta0_a=Param(0, 2, 0.33, 'Transmission rate from unknown cases before 8 March'),
     beta0_b=Param(0, 1, 0.09, 'Transmission rate from unknown cases after 8 March'),
     beta0_c=Param(0, 1, 0.03, 'Transmission rate from unknown cases after 21 March'),
@@ -151,11 +152,10 @@ def seir(state, t, params, ternary=pm.math.switch):
     # Split the state and parameter vectors for more readable code
     # We must slice the vectors to make the length explicit to support of pymc's deferred execution
     s, e, i0, i0d, i1, i2, f, fd, r, rd = [state[i] for i in range(10)]
-    (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d, mu1, mu2,
-     gamma0, gamma0d, gamma1, gamma2) = [params[i] for i in range(20)]
+    (beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d, mu1, mu2,
+     gamma0, gamma0d, gamma1, gamma2) = [params[i] for i in range(19)]
 
-    beta0 = ternary(t <= t0, 0, ternary(t <= T1, beta0_a, ternary(t <= T2, beta0_b, beta0_c)))
-    sigmae = ternary(t <= t0, 0, sigmae)  # freeze the simulation before time t0 by keeping beta0 and sigmae at zero
+    beta0 = ternary(t <= T1, beta0_a, ternary(t <= T2, beta0_b, beta0_c))
 
     newly_exposed = (beta0 * i0 + beta0d * i0d + beta1 * i1 + beta2 * i2) * s / POPULATION_OF_LOMBARDY
     developed_mild_symptoms = sigmae * e
@@ -194,15 +194,14 @@ def seir(state, t, params, ternary=pm.math.switch):
     return ds, de, di0, di0d, di1, di2, df, dfd, dr, drd
 
 
-def run_odeint(t, e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0,
+def run_odeint(t, e0, i0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0,
                mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2, convert_times=True):
 
     if convert_times:
         t = to_sim_day(pd.to_datetime(t))
-        t0 = to_sim_day(pd.to_datetime(t0))
 
-    state0 = POPULATION_OF_LOMBARDY - e0, e0, 0, 0, 0, 0, 0, 0, 0, 0
-    params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d,
+    state0 = POPULATION_OF_LOMBARDY - e0 - i0, e0, i0, 0, 0, 0, 0, 0, 0, 0
+    params = (beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d,
               mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
 
     states = odeint(
@@ -215,25 +214,10 @@ def run_odeint(t, e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigma
 
 
 def simple_obs_model(name, simulated, observed):
-    obs_sd0 = pm.Exponential(name + '_obs_sd0', 100.0)
-    obs_sd1 = pm.Exponential(name + '_obs_sd1', 0.1)
+    obs_sd0 = pm.Exponential(name + '_obs_sd0', 10.0)
+    obs_sd1 = pm.Exponential(name + '_obs_sd1', 0.01)
     pm.Normal(name + '_obs', simulated, obs_sd0 + obs_sd1 * simulated, observed=observed)
 
-
-# @as_op(itypes=[tt.dscalar] * 21, otypes=[tt.dvector])
-# def custom_ode_op(e0, t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
-#                   sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2):
-#     s0 = POPULATION_OF_LOMBARDY - e0
-#     state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
-#     params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
-#               sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
-#     return odeint(
-#         seir,
-#         # partial(seir, ternary=util.ternary),
-#         t=SIM_TIME,
-#         y0=state0,
-#         args=(params,),
-#     )
 
 @as_op(itypes=[tt.dvector, tt.dvector], otypes=[tt.dmatrix])
 def custom_ode_op(state0, params):
@@ -250,55 +234,51 @@ def create_model():
     with pm.Model() as model:
 
         # Transmission rates
-        beta0_a = pm.Lognormal('beta0_a', mu=0.33, sd=1)
-        beta0_b = pm.Lognormal('beta0_b', mu=0.07, sd=1)
-        beta0_c = pm.Lognormal('beta0_c', mu=0.05, sd=1)
-        beta0d = pm.Lognormal('beta0d', mu=0.15, sd=1)
-        beta1 = pm.Lognormal('beta1', mu=0.02, sd=1)
-        beta2 = pm.Lognormal('beta2', mu=0.05, sd=1)
+        beta0_a = pm.Lognormal('beta0_a', mu=np.log(0.33), sd=1)
+        beta0_b = pm.Lognormal('beta0_b', mu=np.log(0.07), sd=1)
+        beta0_c = pm.Lognormal('beta0_c', mu=np.log(0.05), sd=1)
+        beta0d = pm.Lognormal('beta0d', mu=np.log(0.15), sd=1)
+        beta1 = pm.Lognormal('beta1', mu=np.log(0.02), sd=1)
+        beta2 = pm.Lognormal('beta2', mu=np.log(0.05), sd=1)
 
         # Progression rates
         sigmae = pm.Lognormal('sigmae', mu=np.log(0.2), sd=1)
-        sigma0 = pm.Lognormal('sigma0', mu=np.log(0.05), sd=1)
-        sigma0d = pm.Lognormal('sigma0d', mu=np.log(0.04), sd=1)
-        sigma1 = pm.Lognormal('sigma1', mu=np.log(0.02), sd=1)
+        sigma0 = pm.Lognormal('sigma0', mu=np.log(0.1), sd=2)
+        sigma0d = pm.Lognormal('sigma0d', mu=np.log(0.1), sd=2)
+        sigma1 = pm.Lognormal('sigma1', mu=np.log(0.1), sd=2)
 
         # Recovery rates
-        gamma0 = pm.Lognormal('gamma0', mu=np.log(0.01), sd=1)
-        gamma0d = pm.Lognormal('gamma0d', mu=np.log(0.01), sd=1)
-        gamma1 = pm.Lognormal('gamma1', mu=np.log(0.01), sd=1)
-        gamma2 = pm.Lognormal('gamma2', mu=np.log(0.01), sd=1)
+        gamma0 = pm.Lognormal('gamma0', mu=np.log(0.1), sd=2)
+        gamma0d = pm.Lognormal('gamma0d', mu=np.log(0.1), sd=2)
+        gamma1 = pm.Lognormal('gamma1', mu=np.log(0.1), sd=2)
+        gamma2 = pm.Lognormal('gamma2', mu=np.log(0.1), sd=2)
 
         # Fatality rates
-        mu0 = pm.Lognormal('mu0', mu=np.log(0.0007), sd=1)
-        mu0d = pm.Lognormal('mu0d', mu=np.log(0.0006), sd=1)
-        mu1 = pm.Lognormal('mu1', mu=np.log(0.003), sd=1)
-        mu2 = pm.Lognormal('mu2', mu=np.log(0.005), sd=1)
+        mu0 = pm.Lognormal('mu0', mu=np.log(0.001), sd=2)
+        mu0d = pm.Lognormal('mu0d', mu=np.log(0.001), sd=2)
+        mu1 = pm.Lognormal('mu1', mu=np.log(0.003), sd=2)
+        mu2 = pm.Lognormal('mu2', mu=np.log(0.005), sd=2)
 
         # Testing rate
-        theta = pm.Lognormal('theta', mu=np.log(0.002), sd=1)
+        theta = pm.Lognormal('theta', mu=np.log(0.002), sd=2)
 
         # Initial conditions
-        t0 = pm.Uniform('t0', to_sim_day(pd.to_datetime('24 Jan 2020')),
-                        to_sim_day(pd.to_datetime('14 Feb 2020')))
         e0 = pm.Lognormal('e0', np.log(100), 2)
-        s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - e0)
+        i0 = pm.Lognormal('i0', np.log(10), 2)
+        s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - e0 - i0)
 
-        # state0 = s0, e0, 0, 0, 0, 0, 0, 0, 0, 0
-        # params = (t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+        # state0 = s0, e0, i0, 0, 0, 0, 0, 0, 0, 0
+        # params = (beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
         #           sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
-        #
-        # # Dynamics model
-        ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
+        # ode = DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
         # states = ode(state0, params)
 
-        state0 = pm.math.concatenate([s0, e0, 0, 0, 0, 0, 0, 0, 0, 0])
-        params = pm.math.concatenate([t0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
+        state0 = pm.math.stack([s0, e0, i0, 0, 0, 0, 0, 0, 0, 0])
+        params = pm.math.stack([beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d,
                                       sigma1, theta, mu0, mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2])
-        # Dynamics model
         states = custom_ode_op(state0, params)
 
-        s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(len(state0))]
+        s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(10)]
 
         # Observation models (keep it simple)
         simple_obs_model('c', (i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi'])
@@ -314,13 +294,13 @@ def create_model():
 def create_model_from_guess(best_guess):
 
     # Get rid of any zeros
-    best_guess = {k: v or 1e-3 for k, v in best_guess.items()}
+    best_guess = {k: v or 0.01 for k, v in best_guess.items()}
 
     with pm.Model() as model:
 
-        priors = {k: pm.Lognormal(k, mu=v, sd=0.6, testval=v) for k, v in best_guess.items()}
+        priors = {k: pm.Lognormal(k, mu=v, sd=1.0, testval=v) for k, v in best_guess.items()}
 
-        s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - priors['e0'])
+        s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - priors['e0'] - priors['i0'])
 
         # state0 = s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0
         # params = [priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
@@ -330,8 +310,8 @@ def create_model_from_guess(best_guess):
         # ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
         # states = ode(state0, params)
 
-        state0 = pm.math.stack([s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0])
-        params = pm.math.stack([priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+        state0 = pm.math.stack([s0, priors['e0'], priors['i0'], 0, 0, 0, 0, 0, 0, 0])
+        params = pm.math.stack([priors[k] for k in ('beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
                                       'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
                                       'gamma0d', 'gamma1', 'gamma2')])
         # Dynamics model
@@ -374,10 +354,7 @@ def compute_overall_score(**kwargs):
 def fit_nevergrad_model(budget=12_000):
 
     parameters = {
-        name:
-            ng.p.Scalar(lower=param.min, upper=param.max, init=param.default)
-            if isinstance(param.default, (int, float)) else
-            ng.p.Scalar(lower=to_sim_day(param.min), upper=to_sim_day(param.max), init=to_sim_day(param.default))
+        name: ng.p.Scalar(lower=param.min, upper=param.max, init=param.default)
         for name, param in PARAMS.items()
     }
 
