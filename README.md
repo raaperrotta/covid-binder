@@ -20,7 +20,7 @@ This project is particularly interesting because it is entirely open source. The
 - https://github.com/neherlab/covid19_scenarios/blob/master/data/parsers/italy.py
 - https://github.com/neherlab/covid19_scenarios/blob/master/data/scripts/getPopulationData.py
 
-The team responsible for this website has studied [seasonal variation in other Coronaviruses](https://smw.ch/article/doi/smw.2020.20224).The also direct users to read [this medRxiv article](https://www.medrxiv.org/content/10.1101/2020.03.04.20031112v1).
+The team responsible for this website has studied [seasonal variation in other Coronaviruses](https://smw.ch/article/doi/smw.2020.20224). The also direct users to read [this medRxiv article](https://www.medrxiv.org/content/10.1101/2020.03.04.20031112v1).
 
 ### Other
 This [ESRI blog post](https://www.esri.com/about/newsroom/blog/models-maps-explore-covid-19-surges-capacity/) mentions a mobility dataset from Unacast that can show change in average distance traveled as well as change in visits to non-essential locations. This kind of individual location information is rarely available to the public but perhaps we can find an anonymized, aggregate dataset to help inform our modeling of social distancing. For example, rather than a constant rate of interaction changing at threshold times, we could base it on this data, or let it vary as a Gaussian process and infer it from this data.
@@ -32,6 +32,28 @@ Google does too! https://www.google.com/covid19/mobility/ This is also at the co
 It's not clear to me what Facebook data we can access but the descriptions suggest they might be helpful. There is [high resolution population density data](https://dataforgood.fb.com/tools/population-density-maps/) and a [region to region social connectedness index](https://dataforgood.fb.com/tools/social-connectedness-index/). This [blog post](https://about.fb.com/news/2020/04/data-for-good/) explains more about their offerings.
 
 It appears much of this data is being funnelled to the member-only https://www.covid19mobility.org/. If the above data proves insufficient, we could consider pursuing access to this dataset.
+
+### Kaggle
+There is aways good data on Kaggle and especially for COVID-19 but it requires greater scrutiny given the open nature of its curation.
+
+#### https://www.kaggle.com/bitsnpieces/covid19-european-enhanced-surveillance
+Contains weekly case information including gender, age, outcome, hospitalization, ICU, etc.
+
+#### https://www.kaggle.com/lanheken0/community-mobility-data-for-covid19
+Expands the Google downloadable CSV by scraping the PDF reports for regional data within each country.
+
+#### https://www.kaggle.com/davidbnn92/weather-data/output
+A notebook showing how to join the [NOAA GSOD data](https://www.kaggle.com/noaa/gsod) with Kaggle's COVID-19 global forecasting data.
+
+### Next steps
+Our SEIR ODE is so slow and simple compared to the general problems for which odeint was designed. I think it is worth prusuing a simple Runge Kutta or improved Euler ODE integrator with a fixed time step over which we can easily do Bayesian inference. If we can do that, we can begin to expand this model.
+
+Possible avenues for expansion:
+- decompose population by age
+- introduce climate factors
+- decompose region by provinces
+- introduce mobility data to inform interaction rates
+- add a bin for infectious individuals with no symptoms
 
 ## 17 April 2020:
 I'm playing catch-up with notes here.
