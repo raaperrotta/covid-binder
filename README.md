@@ -20,6 +20,19 @@ This project is particularly interesting because it is entirely open source. The
 - https://github.com/neherlab/covid19_scenarios/blob/master/data/parsers/italy.py
 - https://github.com/neherlab/covid19_scenarios/blob/master/data/scripts/getPopulationData.py
 
+The team responsible for this website has studied [seasonal variation in other Coronaviruses](https://smw.ch/article/doi/smw.2020.20224).The also direct users to read [this medRxiv article](https://www.medrxiv.org/content/10.1101/2020.03.04.20031112v1).
+
+### Other
+This [ESRI blog post](https://www.esri.com/about/newsroom/blog/models-maps-explore-covid-19-surges-capacity/) mentions a mobility dataset from Unacast that can show change in average distance traveled as well as change in visits to non-essential locations. This kind of individual location information is rarely available to the public but perhaps we can find an anonymized, aggregate dataset to help inform our modeling of social distancing. For example, rather than a constant rate of interaction changing at threshold times, we could base it on this data, or let it vary as a Gaussian process and infer it from this data.
+
+Apple makes a dataset like this available: https://www.apple.com/covid19/mobility. It reports aggregates at the country level for driving, walking, and transit.
+
+Google does too! https://www.google.com/covid19/mobility/ This is also at the country level. It aggregates data not by method of transport but by destination (retail, grocery, park, etc.) so it might be a nice complement to the Apple data.
+
+It's not clear to me what Facebook data we can access but the descriptions suggest they might be helpful. There is [high resolution population density data](https://dataforgood.fb.com/tools/population-density-maps/) and a [region to region social connectedness index](https://dataforgood.fb.com/tools/social-connectedness-index/). This [blog post](https://about.fb.com/news/2020/04/data-for-good/) explains more about their offerings.
+
+It appears much of this data is being funnelled to the member-only https://www.covid19mobility.org/. If the above data proves insufficient, we could consider pursuing access to this dataset.
+
 ## 17 April 2020:
 I'm playing catch-up with notes here.
 As of today I have a SEIR model (simplified derivative of the SEIRS+ library) that I can fit against data from Lombardy using nevergrad and pymc3. Nevergrad can achieve a good fit of the data but gives no characterization of the uncertainty. If I use the nevergrad solution to create priors for pymc3 I get good-looking, consistent results with sensible uncertainty expressed.
