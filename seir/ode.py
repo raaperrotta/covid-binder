@@ -104,7 +104,6 @@ class DifferentialEquation(theano.Op):
 
     def make_node(self, y0, theta):
         inputs = (y0, theta)
-        _log.debug('make_node for inputs {}'.format(hash(inputs)))
         states = self._otypes[0]()
         sens = self._otypes[1]()
         return theano.Apply(self, inputs, (states, sens))
@@ -127,32 +126,32 @@ class DifferentialEquation(theano.Op):
         # use default implementation to prepare symbolic outputs (via make_node)
         states, sens = super(theano.Op, self).__call__(y0, theta, **kwargs)
 
-        if theano.config.compute_test_value != 'off':
-            # compute test values from input test values
-            test_states, test_sens = self._simulate(
-                y0=self._get_test_value(y0),
-                theta=self._get_test_value(theta)
-            )
-
-            # check types of simulation result
-            if not test_states.dtype == self._otypes[0].dtype:
-                raise DtypeError('Simulated states have the wrong type.', actual=test_states.dtype,
-                                 expected=self._otypes[0].dtype)
-            if not test_sens.dtype == self._otypes[1].dtype:
-                raise DtypeError('Simulated sensitivities have the wrong type.', actual=test_sens.dtype,
-                                 expected=self._otypes[1].dtype)
-
-            # check shapes of simulation result
-            expected_states_shape = (self.n_times, self.n_states)
-            expected_sens_shape = (self.n_times, self.n_states, self.n_p)
-            if not test_states.shape == expected_states_shape:
-                raise ShapeError('Simulated states have the wrong shape.', test_states.shape, expected_states_shape)
-            if not test_sens.shape == expected_sens_shape:
-                raise ShapeError('Simulated sensitivities have the wrong shape.', test_sens.shape, expected_sens_shape)
-
-            # attach results as test values to the outputs
-            states.tag.test_value = test_states
-            sens.tag.test_value = test_sens
+        # if theano.config.compute_test_value != 'off':
+        #     # compute test values from input test values
+        #     test_states, test_sens = self._simulate(
+        #         y0=self._get_test_value(y0),
+        #         theta=self._get_test_value(theta)
+        #     )
+        #
+        #     # check types of simulation result
+        #     if not test_states.dtype == self._otypes[0].dtype:
+        #         raise DtypeError('Simulated states have the wrong type.', actual=test_states.dtype,
+        #                          expected=self._otypes[0].dtype)
+        #     if not test_sens.dtype == self._otypes[1].dtype:
+        #         raise DtypeError('Simulated sensitivities have the wrong type.', actual=test_sens.dtype,
+        #                          expected=self._otypes[1].dtype)
+        #
+        #     # check shapes of simulation result
+        #     expected_states_shape = (self.n_times, self.n_states)
+        #     expected_sens_shape = (self.n_times, self.n_states, self.n_p)
+        #     if not test_states.shape == expected_states_shape:
+        #         raise ShapeError('Simulated states have the wrong shape.', test_states.shape, expected_states_shape)
+        #     if not test_sens.shape == expected_sens_shape:
+        #         raise ShapeError('Simulated sensitivities have the wrong shape.', test_sens.shape, expected_sens_shape)
+        #
+        #     # attach results as test values to the outputs
+        #     states.tag.test_value = test_states
+        #     sens.tag.test_value = test_sens
 
         if return_sens:
             return states, sens
@@ -163,10 +162,10 @@ class DifferentialEquation(theano.Op):
         # simulate states and sensitivities in one forward pass
         output_storage[0][0], output_storage[1][0] = self._simulate(y0, theta)
 
-    def infer_shape(self, node, input_shapes):
-        s_y0, s_theta = input_shapes
-        output_shapes = [(self.n_times, self.n_states), (self.n_times, self.n_states, self.n_p)]
-        return output_shapes
+    # def infer_shape(self, node, input_shapes):
+    #     s_y0, s_theta = input_shapes
+    #     output_shapes = [(self.n_times, self.n_states), (self.n_times, self.n_states, self.n_p)]
+    #     return output_shapes
 
     def grad(self, inputs, output_grads):
         _, sens = self.__call__(*inputs, return_sens=True)
