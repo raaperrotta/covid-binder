@@ -2,6 +2,23 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/raaperrotta/covid-binder/master)
 
+## 20 April 2020:
+I'm taking a look at other COVID-19 models to investigate:
+- possible candidates for what-if analysis
+- methods worth adopting in our own model
+- data sources and lessons learned using them
+
+### healthdata.org
+The COVID-19 model from IHME (see http://www.healthdata.org/covid/faqs) has pretty wide acceptance despite (and partially because of) continued scrutiny. It uses a pyhton library [Curve Fit](https://ihmeuw-msca.github.io/CurveFit/) to perform generalized logistic curves to COVID-19 hospitalization and death data. It uses numeric auto-differentiation for fast fitting without explicit gradient calculations and uses a cool-sounding iterative numeric approach for uncertainty analysis called predictive validity based uncertainty.
+
+The Curve Fit library is open source but I haven't yet found their data pipelines or model fitting routines or fit models anywhere. They publish their predictions, which we could use, but having a fit model itself would allow us to conduct our own what-if analyses. They say in their FAQ that they are working on predictions for scenarios in which social distancing measures are lifted before the pandemic is under control (http://www.healthdata.org/covid/faqs#social%20distancing).
+
+### covid19-scenarios.org
+This analysis tool allows the user to run a COVID-19 simulation and see the results plotted against data collected from a large number of available sources. It is remarkably similar to my SEIR model work but is certainly more comprehensive, for example it models age distributions and the virus' effect on each age category differently. It appears they have dome some rudimentary fitting of their simulation to the data, perhaps only fitting against number of deaths.
+
+This project is particularly interesting because it is entirely open source. Their data pipelines show they are using the same data for Italy we are. They also have some additional data covering things like number of hospital beds, total population, and age distribution.
+- https://github.com/neherlab/covid19_scenarios/blob/master/data/parsers/italy.py
+- https://github.com/neherlab/covid19_scenarios/blob/master/data/scripts/getPopulationData.py
 
 ## 17 April 2020:
 I'm playing catch-up with notes here.
