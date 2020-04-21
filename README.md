@@ -2,6 +2,15 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/raaperrotta/covid-binder/master)
 
+## 21 April 2020:
+Stochastic differential equations! I found the EulerMaruyama distibution in the pymc3 timseries module which computes stochastic differential equation solutions as samples from a distribution where the expected values are computed using Euler's method on the ODE. It is fast!
+
+There is a good deal of discussion in the literature about the accuracy of such a method but the general argument is that inaccuracy in the data and model outweigh inaccuracy in the ODE solver in most cases. I think that will be true here since the numbers change relatively slowly.
+
+I had to implement my own class to add time dependence to this node. While difficult in general, the simplifying assumption that parameters are constant between time steps is well-suited to this model. I created sde_seir.TimeDependentEulerMaruyama and will write a new pymc model using it shortly.
+
+It is running but failing with the bad initial energy error. I'll look into that tomorrow.
+
 ## 20 April 2020:
 I'm taking a look at other COVID-19 models to investigate:
 - possible candidates for what-if analysis
