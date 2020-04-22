@@ -141,7 +141,8 @@ def fiddle(**kwargs):
 
     # Override default values with kwargs
     for k, v in kwargs.items():
-        sliders[k].value = v
+        if k in sliders:
+            sliders[k].value = v
 
     n_sliders = len(sliders)
     slider_values = list(sliders.values())

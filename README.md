@@ -2,6 +2,15 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/raaperrotta/covid-binder/master)
 
+## 22 April 2020
+Most of my notes are in jupyter notebooks today. The summary:
+
+I generated a TimeDependentEulerMaruyama based model and used nevergrad and my own euler.odeint to give it a good starting condition. I can generate samples from it but they still are finiky, often failing part way through a chain. I suspect the number of parameters is simply too high for my poorly defined model. Maybe with an easier posterior space this number of sampels would not be troublesome.
+
+I implemented a simple seir model with simulated data to explore everything I can find on ODEs in pymc. I am confident the speed of the sampling is strictly due to the sampler, not specifically the ODE portion. That said, it is almost definitely a result of a poorly defined model and not a bug in the sampler. NUTS is probably just finding it hard to generate good samples and the more it explores the harder that gets.
+
+Something suggested in the pymc docs is sequential monte carlo. I am running a SMC sampler now on my dummy SEIR. Other possible next steps include reparameterizing the model to make parameters independent (or close to it), addressing unidentifiable parameters.
+
 ## 21 April 2020:
 Stochastic differential equations! I found the EulerMaruyama distibution in the pymc3 timseries module which computes stochastic differential equation solutions as samples from a distribution where the expected values are computed using Euler's method on the ODE. It is fast!
 

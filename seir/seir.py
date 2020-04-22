@@ -83,6 +83,7 @@ import theano.tensor as tt
 from theano.compile.ops import as_op
 from tqdm import tqdm
 
+import euler
 import util
 from data import (
     lombardia,
@@ -195,7 +196,7 @@ def seir(state, t, params, ternary=pm.math.switch):
 
 
 def run_odeint(t, e0, i0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0,
-               mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2, convert_times=True):
+               mu0d, mu1, mu2, gamma0, gamma0d, gamma1, gamma2, convert_times=True, ode=odeint):
 
     if convert_times:
         t = to_sim_day(pd.to_datetime(t))
@@ -204,7 +205,7 @@ def run_odeint(t, e0, i0, beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigma
     params = (beta0_a, beta0_b, beta0_c, beta0d, beta1, beta2, sigmae, sigma0, sigma0d, sigma1, theta, mu0, mu0d,
               mu1, mu2, gamma0, gamma0d, gamma1, gamma2)
 
-    states = odeint(
+    states = ode(
         partial(seir, ternary=util.ternary),
         t=t,
         y0=state0,
@@ -302,20 +303,21 @@ def create_model_from_guess(best_guess):
 
         s0 = pm.Deterministic('s0', POPULATION_OF_LOMBARDY - priors['e0'] - priors['i0'])
 
-        # state0 = s0, priors['e0'], 0, 0, 0, 0, 0, 0, 0, 0
-        # params = [priors[k] for k in ('t0', 'beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
-        #                               'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
-        #                               'gamma0d', 'gamma1', 'gamma2')]
-        # # Dynamics model
-        # ode = pm.ode.DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0), n_theta=len(params))
-        # states = ode(state0, params)
-
-        state0 = pm.math.stack([s0, priors['e0'], priors['i0'], 0, 0, 0, 0, 0, 0, 0])
-        params = pm.math.stack([priors[k] for k in ('beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+        state0 = s0, priors['e0'], priors['i0'], 0, 0, 0, 0, 0, 0, 0
+        params = [priors[k] for k in ('beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
                                       'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
-                                      'gamma0d', 'gamma1', 'gamma2')])
+                                      'gamma0d', 'gamma1', 'gamma2')]
         # Dynamics model
-        states = custom_ode_op(state0, params)
+        ode = DifferentialEquation(func=seir, t0=0, times=SIM_TIME, n_states=len(state0),
+                                   n_theta=len(params), odeint=euler.odeint)
+        states = ode(state0, params)
+
+        # state0 = pm.math.stack([s0, priors['e0'], priors['i0'], 0, 0, 0, 0, 0, 0, 0])
+        # params = pm.math.stack([priors[k] for k in ('beta0_a', 'beta0_b', 'beta0_c', 'beta0d', 'beta1', 'beta2', 'sigmae',
+        #                               'sigma0', 'sigma0d', 'sigma1', 'theta', 'mu0', 'mu0d', 'mu1', 'mu2', 'gamma0',
+        #                               'gamma0d', 'gamma1', 'gamma2')])
+        # # Dynamics model
+        # states = custom_ode_op(state0, params)
 
         s, e, i0, i0d, i1, i2, f, fd, r, rd = [states[:, i] for i in range(10)]
 
@@ -340,7 +342,7 @@ def compute_trace_score(simulated, observed):
 
 def compute_overall_score(**kwargs):
     """Compute goodness-of-fit score suitable for nevergrad optimization"""
-    s, e, i0, i0d, i1, i2, f, fd, r, rd = run_odeint(SIM_TIME, convert_times=False, **kwargs)
+    s, e, i0, i0d, i1, i2, f, fd, r, rd = run_odeint(SIM_TIME, ode=euler.odeint, convert_times=False, **kwargs)
     return (
         compute_trace_score((i0d + i1 + i2 + fd + rd)[I_FIRST_OBS:], lombardia['totale_casi']) +
         compute_trace_score(fd[I_FIRST_OBS:], lombardia['deceduti']) +
@@ -379,7 +381,7 @@ def fit_nevergrad_model(budget=12_000):
         best_score = trial_score
         best_kwargs = kwargs
         smooth_score = trial_score
-        smoothing = 0.3
+        smoothing = 0.03
         running = []
         while n_complete < optimizer.budget:
             # Add new jobs
@@ -399,7 +401,8 @@ def fit_nevergrad_model(budget=12_000):
                     if result < best_score:
                         best_score = result
                         best_kwargs = candidate.kwargs
-                    smooth_score = smooth_score * (1 - smoothing) + result * smoothing
+                    if not np.isnan(result) and not np.isinf(result):
+                        smooth_score = smooth_score * (1 - smoothing) + result * smoothing
                     pbar.set_description(f'Best: {best_score:.4g}, Smooth: {smooth_score:.4g}, Last: {result:.4g}',
                                          refresh=False)
                     pbar.update()

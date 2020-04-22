@@ -1,4 +1,12 @@
+import logging
+import os
+
+import multiprocessing as mp
 import holoviews as hv
+import numpy as np
+from tqdm import tqdm
+
+LOG = logging.getLogger(__name__)
 
 
 def ternary(conditional, if_true, if_false):
@@ -26,3 +34,54 @@ def plot_trace(trace, varnames=None, tune=0):
             .options(aspect=3, responsive=True)
         )
     return hv.Layout(plots).cols(2)
+
+
+def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn):
+    LOG.info('Computing score of default instrumentation values')
+    args, kwargs = instrumentation.value
+    trial_score = score_fn(*args, **kwargs)
+    LOG.debug('Trial score: %s', trial_score)
+
+    num_processes = os.cpu_count()
+    optimizer = optimizer_class(
+        instrumentation, budget=budget, num_workers=num_processes,
+    )
+    LOG.debug('Created an optimizer of type %s with %d processes and a budget of %d',
+              optimizer_class, num_processes, budget)
+    with mp.Pool(processes=num_processes) as pool, tqdm(total=budget) as pbar:
+        n_complete = 0
+        best_score = trial_score
+        best_kwargs = kwargs
+        smooth_score = trial_score
+        smoothing = 0.05
+        running = []
+        while n_complete < optimizer.budget:
+            # Add new jobs
+            while (
+                    len(running) < optimizer.num_workers
+                    and len(running) + n_complete < optimizer.budget
+            ):
+                candidate = optimizer.ask()
+                job = pool.apply_async(func=score_fn, args=candidate.args, kwds=candidate.kwargs)
+                running.append((candidate, job))
+            # Collect finished jobs
+            still_running = []
+            for candidate, job in running:
+                if job.ready():
+                    result = job.get()
+                    optimizer.tell(candidate, result)
+                    if result < best_score:
+                        best_score = result
+                        best_kwargs = candidate.kwargs
+                    if not np.isnan(result) and not np.isinf(result):
+                        smooth_score = smooth_score * (1 - smoothing) + result * smoothing
+                    pbar.set_description(f'Best: {best_score:.4g}, Smooth: {smooth_score:.4g}, Last: {result:.4g}',
+                                         refresh=False)
+                    pbar.update()
+                    n_complete += 1
+                else:
+                    still_running.append((candidate, job))
+            running = still_running
+
+    args, kwargs = optimizer.provide_recommendation().value
+    return kwargs, best_kwargs

@@ -4,9 +4,10 @@ import numpy as np
 import theano
 import theano.tensor as tt
 from pymc3.exceptions import ShapeError, DtypeError
-from scipy.integrate import odeint
 
-_log = logging.getLogger('pymc3')
+import scipy.integrate
+
+_log = logging.getLogger(__name__)
 floatX = theano.config.floatX
 
 
@@ -52,7 +53,7 @@ class DifferentialEquation(theano.Op):
     ]
     __props__ = ("func", "times", "n_states", "n_theta", "t0")
 
-    def __init__(self, func, times, *, n_states, n_theta, t0=0):
+    def __init__(self, func, times, *, n_states, n_theta, t0=0, odeint=scipy.integrate.odeint):
         if not callable(func):
             raise ValueError("Argument func must be callable.")
         if n_states < 1:
@@ -68,6 +69,9 @@ class DifferentialEquation(theano.Op):
         self.n_states = n_states
         self.n_theta = n_theta
         self.n_p = n_states + n_theta
+
+        _log.debug('Using odeint %s', odeint)
+        self.odeint = odeint
 
         # Private
         self._augmented_times = np.insert(times, 0, t0).astype(floatX)
@@ -91,10 +95,12 @@ class DifferentialEquation(theano.Op):
         s0 = np.concatenate([y0, self._sens_ic])
 
         # perform the integration
-        sol = odeint(
+        sol = self.odeint(
             func=self._system, y0=s0, t=self._augmented_times, args=(np.concatenate([y0, theta]),),
         ).astype(floatX)
         # The solution
+        _log.debug('Shape of solution is %s. (%s times, %s states, %s params)',
+                   sol.shape, self.n_times, self.n_states, self.n_theta)
         y = sol[1:, :self.n_states]
 
         # The sensitivities, reshaped to be a sequence of matrices
