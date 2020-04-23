@@ -2,10 +2,23 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/raaperrotta/covid-binder/master)
 
+## 23 April 2020
+I have created an "easy" problem as an SEIR model that is fully observable and given correct, informative priors. All states are observed for the latter two thirds of the time. I can do reasonably efficient sampling on this with NUTS and SMC. MH, HMC, ADVI, and SGDV were all inaccurate or slow.
+
+Now I am adding complexity to the model to make it more real. I have added detection and differentiated between hidden and detected cases. Only detected cases are observed. The sampling immediately showed the behavior I see in the full COVID model in which sampling gets drastically slower as it goes on. I expect the sampler is moving through the very correlated posterior space and getting stuck in funnels. Addressing this will require constraining the model and/or parameters to increase independence and identifiability.
+
+One way would be to make stronger assumptions about the relationships of some of the parameters. I generally don't like to do that because I want the data to validate my withheld assumptions, but for sake of making the model work at all I could constrain transmission rate and death rate in detected cases to be less than in undetected cases and recovery rate greater.
+
+Decreasing the NUTS max_tree_depth made it run faster but the results aren't great (as expected). I can see strong correlation between e0 and sigma, which makes sense as they determine how the initial scenario unfolds. Especially in the COVID model, when those values may change, we don't have a lot of data to inform these early parameters. Maybe it would be better to just run the sim while we have data and allow more states to have nonzero initial conditions.
+
+That means adding a bunch more parameters. (I implemented it as one vector prior which means the prior is less helpful than before.) So maybe it isn't surprising that the sampling was slower than before.
+
+To better explore the parameter space, and possible constraints and better parameterizations, I moved back to the Euler Maruyama method. This time, I reimplemented it based on the PositiveContinuous base class to ensure values are always positive (like pymc3.Lognormal).
+
 ## 22 April 2020
 Most of my notes are in jupyter notebooks today. The summary:
 
-I generated a TimeDependentEulerMaruyama based model and used nevergrad and my own euler.odeint to give it a good starting condition. I can generate samples from it but they still are finiky, often failing part way through a chain. I suspect the number of parameters is simply too high for my poorly defined model. Maybe with an easier posterior space this number of sampels would not be troublesome.
+I generated a TimeDependentEulerMaruyama based model and used nevergrad and my own euler.odeint to give it a good starting condition. I can generate samples from it but they still are finicky, often failing part way through a chain. I suspect the number of parameters is simply too high for my poorly defined model. Maybe with an easier posterior space this number of samples would not be troublesome.
 
 I implemented a simple seir model with simulated data to explore everything I can find on ODEs in pymc. I am confident the speed of the sampling is strictly due to the sampler, not specifically the ODE portion. That said, it is almost definitely a result of a poorly defined model and not a bug in the sampler. NUTS is probably just finding it hard to generate good samples and the more it explores the harder that gets.
 
