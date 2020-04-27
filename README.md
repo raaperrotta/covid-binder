@@ -2,6 +2,13 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/raaperrotta/covid-binder/master)
 
+# 24 April 2020
+Perhaps I could enforce initial conditions on the Euler Maruyama SDEs using observations on the first time step. Or equally so, the final conditions or intermediate such as ratios of symptom levels.
+
+These constraints had a huge effect! I was able to relax the parameter priors significantly and still get decent sampling. It is still not trivial to do this in a principled way but it is a promising path forward. Perhaps enough that I can remove the restrictions on relative parameters. That may even improve sampling by eliminating some funnels.
+
+It is about time I tried this on my COVID model. TODO: I should check the prior and posterior variances and see which priors are informative. Would it be worth implementing an SDE based on something more efficient than Euler's method? I suppose as long as my population values stay positive it must be working decently well. And I can always increase the time resolution. It would be a shame to lose the speed of the SDE chasing unnecessary accuracy improvements.
+
 ## 23 April 2020
 I have created an "easy" problem as an SEIR model that is fully observable and given correct, informative priors. All states are observed for the latter two thirds of the time. I can do reasonably efficient sampling on this with NUTS and SMC. MH, HMC, ADVI, and SGDV were all inaccurate or slow.
 
