@@ -2,6 +2,8 @@ import logging
 import os
 
 import multiprocessing as mp
+import pickle
+
 import holoviews as hv
 import numpy as np
 from tqdm import tqdm
@@ -37,7 +39,7 @@ def plot_trace(trace, varnames=None, tune=0):
 
 
 def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
-                        num_processes=os.cpu_count(), num_workers=os.cpu_count()):
+                        num_processes=os.cpu_count(), num_workers=os.cpu_count(), save_after=None):
     LOG.info('Computing score of default instrumentation values')
     args, kwargs = instrumentation.value
     trial_score = score_fn(*args, **kwargs)
@@ -56,6 +58,7 @@ def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
             smooth_score = trial_score
             smoothing = 0.05
             running = []
+            since_save = 0
             while n_complete < optimizer.budget:
                 # Add new jobs
                 while (
@@ -80,6 +83,13 @@ def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
                                              refresh=False)
                         pbar.update()
                         n_complete += 1
+                        since_save += 1
+                        if save_after and since_save >= save_after:
+                            with open('tmp.pkl', 'wb') as f:
+                                pickle.dump(optimizer.provide_recommendation().kwargs, f)
+                            with open('tmp_best.pkl', 'wb') as f:
+                                pickle.dump(best_kwargs, f)
+                            since_save = 0
                     else:
                         still_running.append((candidate, job))
                 running = still_running
@@ -87,4 +97,8 @@ def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
         LOG.info('Manually stopped (KeyboardInterrupt). Providing best recommendation with available data.')
 
     args, kwargs = optimizer.provide_recommendation().value
+    with open('tmp.pkl', 'wb') as f:
+        pickle.dump(kwargs, f)
+    with open('tmp_best.pkl', 'wb') as f:
+        pickle.dump(best_kwargs, f)
     return kwargs, best_kwargs
