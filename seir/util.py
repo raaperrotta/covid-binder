@@ -59,6 +59,7 @@ def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
             smoothing = 0.05
             running = []
             since_save = 0
+            since_new_best = 0
             while n_complete < optimizer.budget:
                 # Add new jobs
                 while (
@@ -72,14 +73,16 @@ def fit_nevergrad_model(instrumentation, budget, optimizer_class, score_fn,
                 still_running = []
                 for candidate, job in running:
                     if job.ready():
+                        since_new_best += 1
                         result = job.get()
                         optimizer.tell(candidate, result)
                         if result < best_score:
                             best_score = result
                             best_kwargs = candidate.kwargs
+                            since_new_best = 0
                         if not np.isnan(result) and not np.isinf(result):
                             smooth_score = smooth_score * (1 - smoothing) + result * smoothing
-                        pbar.set_description(f'Best: {best_score:.4g}, Smooth: {smooth_score:.4g}, Last: {result:.4g}',
+                        pbar.set_description(f'Best: {best_score:.4g}, Last: {result:.4g}, {since_new_best:,.0f} since best',
                                              refresh=False)
                         pbar.update()
                         n_complete += 1

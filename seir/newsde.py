@@ -59,11 +59,49 @@ ERA_INDICES = np.sum(np.array(T) > ERA_STARTS[:, None], axis=0) if N_ERAS > 1 el
 I_FIRST = np.where(T == lombardia['data'].min())[0][0]
 I_LAST = np.where(T == lombardia['data'].max())[0][0]
 
-T_STATS = pd.to_datetime('16 April 2020')
-I_STATS = np.where(T == T_STATS)[0][0]
+STATS = pd.read_pickle('lethality.pandas')
+T_STATS = STATS['day']  # Should this be offset by some reporting lag?
+I_STATS = [np.where(T == t)[0][0] for t in T_STATS]
 
-T_STATS1 = pd.to_datetime('26 April 2020')
-I_STATS1 = np.where(T == T_STATS)[0][0]
+
+def slicer(*, state=slice(None), age=slice(None),
+           detected=slice(None), recovered=slice(None),
+           deceased=slice(None), time=slice(None)):
+
+    if isinstance(state, list):
+        pass
+    elif isinstance(state, tuple):
+        state = slice(*state)
+    elif isinstance(state, slice):
+        pass
+    else:
+        pass
+
+    if isinstance(age, list):
+        pass
+    elif isinstance(age, tuple):
+        age = slice(*age)
+    elif isinstance(age, slice):
+        pass
+    else:
+        pass
+
+    if detected is False:
+        detected = slice(0, 1)
+    elif detected is True:
+        detected = slice(1, 2)
+
+    if recovered is False:
+        recovered = slice(0, 1)
+    elif recovered is True:
+        recovered = slice(1, 2)
+
+    if deceased is False:
+        deceased = slice(0, 1)
+    elif deceased is True:
+        deceased = slice(1, 2)
+
+    return state, age, detected, recovered, deceased, time
 
 
 def norm_logpdf(x, mu, sd):
@@ -249,42 +287,11 @@ def calc_mlogp(e0, beta, sigma, theta, gamma, mu, return_y=False):
     ])
     logp += norm_logpdf(combined_lethality, f, 0.1).sum()
 
-    # Observe to weakly enforce plausible fraction of undetected cases on April 16
-    percent_undetected = 100 * y2[1:, :, :1].sum() / y2[1:, :, :].sum()
-    # counter-intuitively, sd of 1 is weak because of quantity of other observations
-    logp += norm_logpdf(percent_undetected, 50, 1)
+    # # Observe to weakly enforce plausible fraction of undetected cases on April 16
+    # percent_undetected = 100 * y2[1:, :, :1].sum() / y2[1:, :, :].sum()
+    # # counter-intuitively, sd of 1 is weak because of quantity of other observations
+    # logp += norm_logpdf(percent_undetected, 50, 1)
 
-    # Observe statistics from April 26
-    y2 = y[..., I_STATS1]
-    # Fraction of cases by severity
-    f = y2[N_INERT_STATES:, :, 1:, :, :].sum(axis=(1, 2, 3, 4))
-    f = f / f.sum() * (100 - 15.4)  # scale by specified symptom levels
-    # Combine "pauci-sintomatico" and "lieve"
-    logp += norm_logpdf(np.array([13.3, 16.3 + 35.5, 17.5, 2.0]), f, 1.0).sum()
-    # Fraction of cases by age
-    f = y2[N_INERT_STATES:, :, 1:, :, :].sum(axis=(0, 2, 3, 4))
-    f = f / f.sum() * 100
-    logp += norm_logpdf(np.array([1.8 + 27.4, 31.8, 39.0]), f, 0.1).sum()
-    # Fraction deaths by age
-    f = y2[:, :, 1:, :, 1:].sum(axis=(0, 2, 3, 4))
-    f = f / f.sum() * 100
-    logp += norm_logpdf(np.array([0 + 0 + 0 + 0.2 + 0.9, 3.6 + 10.9, 29 + 40.6 + 14.7]), f, 0.1).sum()
-    # Lethality by age
-    f = y2[:, :, 1:, :, 1:].sum(axis=(0, 2, 3, 4)) / y2[:, :, 1:, :, :].sum(axis=(0, 2, 3, 4)) * 100
-    deaths = np.array([2, 0, 8, 49, 223, 903, 2708, 7191, 10050, 3646])
-    lethality = np.array([0.1, 0, 0.1, 0.3, 0.9,  2.5, 9.8, 24.1, 28.9, 24.6])
-    cases = deaths / lethality
-    cases[np.isnan(cases)] = 0
-    combined_lethality = np.array([
-        deaths[:5].sum() / cases[:5].sum(),
-        deaths[5:7].sum() / cases[5:7].sum(),
-        deaths[7:].sum() / cases[7:].sum(),
-    ])
-    logp += norm_logpdf(combined_lethality, f, 0.1).sum()
-
-    # Observe to weakly enforce plausible fraction of undetected cases on April 26
-    percent_undetected = 100 * y2[1:, :, :1].sum() / y2[1:, :, :].sum()
-    logp += norm_logpdf(percent_undetected, 50, 1)
 
     return -logp
 
