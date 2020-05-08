@@ -63,17 +63,20 @@ deaths['0-49'] = (
 )
 deaths['50-69'] = deaths['50-59'] + deaths['60-69']
 deaths['>=70'] = deaths['70-79'] + deaths['80-89'] + deaths['>=90']
-data_deaths = np.array(deaths[['0-49', '50-59', '>=70']]).T
+data_deaths = np.array(deaths[['0-49', '50-69', '>=70']]).T
 
 idx_lethality = tuple(idx_time.asof(lethality['day']).astype(int))
 # lethality can't just be added, we need to recompute it for our age groups
-cases = (100 * deaths.set_index('day') / lethality.set_index('day')).fillna(0)
+cases = (deaths.set_index('day') / (lethality.set_index('day') / 100)).fillna(0).astype(int)
 cases['0-49'] = (
         cases['0-9'] + cases['10-19'] + cases['20-29'] + cases['30-39'] + cases['40-49']
 )
-cases['50-59'] = cases['50-59'] + cases['60-69']
+cases['50-69'] = cases['50-59'] + cases['60-69']
 cases['>=70'] = cases['70-79'] + cases['80-89'] + cases['>=90']
-data_lethality = 100 * data_deaths / np.array(cases[['0-49', '50-59', '>=70']]).T
+data_lethality = 100 * data_deaths / np.array(cases[['0-49', '50-69', '>=70']]).T
+# For analysis outside this script, wrote the values back to the dataframe
+for i, age in enumerate(['0-49', '50-69', '>=70']):
+    lethality[age] = data_lethality[i]
 
 # These age groups don't align perfectly with the others but they are close.
 # Should we adjust for that?
@@ -81,10 +84,8 @@ idx_cases = tuple(idx_time.asof(cases_by_age['day']).astype(int))
 cases_by_age['0-50'] = cases_by_age['0-18'] + cases_by_age['19-50']
 data_cases = np.array(cases_by_age[['0-50', '51-70', '>70']]).T
 
-with open('seir/tmp.pkl', 'rb') as f:
+with open('sample_sde_may8.pkl', 'rb') as f:
     kwargs = pickle.load(f)
-
-print({k: v.shape for k, v in kwargs.items()})
 
 
 def deterministic_ode(
@@ -188,6 +189,7 @@ def compare_y_to_data(y, normal=pm.Normal):
     simple_obs_model('totale_casi', y1[1:, :, 1:, :, :], 2, 0.02, normal)
     simple_obs_model('totale_positivi', y1[1:, :, 1:, :1, :1], 2, 0.04, normal)
     # Deceased: just from detected cases
+    # TODO: Should this be from hospital deaths only?
     simple_obs_model('deceduti', y1[:, :, 1:, :, 1:], 2, 0.01, normal)
     # Home isolation: includes only detected cases not admitted to the hospital
     # Should it include presymptomatic cases? Is it current or total? We treat it as total here.
@@ -209,12 +211,13 @@ def compare_y_to_data(y, normal=pm.Normal):
     # Observe stats on breakdown by severity, age
     # Fraction of cases by severity
     f = y[N_INERT_STATES:, :, 1:, :1, :1, idx_severity].sum(axis=(1, 2, 3, 4))
-    f = f / f.sum() * 100
+    f = f / f.sum(axis=0, keepdims=True) * 100
     normal(name='percent_by_severity', mu=f, sd=4.0, observed=data_severity)
     # Fraction of cases by age
     f = y[N_INERT_STATES:, :, 1:, :, :, idx_cases].sum(axis=(0, 2, 3, 4))
-    f = f / f.sum() * 100
-    normal(name='percent_cases_by_age', mu=f, sd=2.0, observed=data_cases)
+    f = f / f.sum(axis=1, keepdims=True) * 100
+    # Inflated SD to compensate for misaligned age groups
+    normal(name='percent_cases_by_age', mu=f, sd=4.0, observed=data_cases)
     # Lethality by age
     f = (
             y[:, :, 1:, :, 1:, idx_lethality].sum(axis=(0, 2, 3, 4))
@@ -285,8 +288,8 @@ def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     y0 = y[..., :-1]
 
     newly_exposed = (
-            y0[:1]
-            * (y0[N_INERT_STATES:, :, :, :1, :1] * beta).sum(axis=(0, 1, 2, 3, 4), keepdims=True)
+            (y0[:1] * y0[N_INERT_STATES:, :, :, :1, :1] * beta)
+            .sum(axis=(0, 1, 2, 3, 4), keepdims=True)
             / POPULATION
     )
     disease_progressed = y0[1:-1] * sigma
@@ -317,6 +320,7 @@ def make_pymc_model():  # should be called within a pymc3.Model context
         sd=SD,
         testval=np.exp(kwargs['beta']),
         shape=(N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS),
+        # shape=(N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS),
     )
 
     # All states except susceptible and critical can progress
@@ -421,14 +425,15 @@ def run_nevergrad():
 
     e0 = np.log(10) * np.ones(N_AGES)
     beta = - np.log(15) * np.ones((N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS))
+    # beta = - np.log(15) * np.ones((N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS))
     sigma = - np.log(3) * np.ones((N_STATES - 2, N_AGES, 2, 1, 1, 1))
     theta = - np.log(12) * np.ones((N_STATES - 1, 1, 1, 1, 1, 1))
-    gamma = - np.log(120) * np.ones((N_STATES - 1, N_AGES, 2, 1, 1, 1))
-    mu = - np.log(1e3) * np.ones((N_LETHAL_STATES, N_AGES, 2, 1, 1, 1))
+    gamma = - np.log(100) * np.ones((N_STATES - 1, N_AGES, 2, 1, 1, 1))
+    mu = - np.log(100) * np.ones((N_LETHAL_STATES, N_AGES, 2, 1, 1, 1))
 
     # OR, start from previous saved parameters
 
-    # with open('seir/tmp.pkl', 'rb') as f:
+    # with open('sample_sde_may8.pkl', 'rb') as f:
     #     kwargs = pickle.load(f)
     # e0 = kwargs['e0']
     # beta = kwargs['beta']
