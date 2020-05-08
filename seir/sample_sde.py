@@ -40,7 +40,7 @@ DT = 1 / N_PER_DAY
 T = pd.date_range('8 Feb 2020', '15 May 2020', freq=f'{24 // N_PER_DAY}h')
 N_T = len(T)
 
-ERA_STARTS = pd.to_datetime(['8 Mar 2020', '21 Mar 2020'])
+ERA_STARTS = pd.to_datetime(['1 Mar 2020', '21 Mar 2020'])
 N_ERAS = len(ERA_STARTS) + 1
 ERA_INDICES = np.sum(np.array(T) > ERA_STARTS[:, None], axis=0) if N_ERAS > 1 else [0] * N_T
 
@@ -84,13 +84,22 @@ idx_cases = tuple(idx_time.asof(cases_by_age['day']).astype(int))
 cases_by_age['0-50'] = cases_by_age['0-18'] + cases_by_age['19-50']
 data_cases = np.array(cases_by_age[['0-50', '51-70', '>70']]).T
 
+# Total % asymptomatic from https://www.medrxiv.org/content/10.1101/2020.04.17.20053157v1.full.pdf
+# Second survey conducted 7 March 2020
+T_MEDRXIV_SURVEY = pd.to_datetime('7 March 2020')
+I_MEDRXIV_SURVEY = np.where(T == T_MEDRXIV_SURVEY)[0][0]
+PERCENT_ASYMPTOMATIC = 43.2
+SD_ASYMPTOMATIC = 5.5  # 95% CI 32.2-54.7% in just Vo, but should be useful as an estimate
+
 with open('sample_sde_may8.pkl', 'rb') as f:
     kwargs = pickle.load(f)
 
 
 def deterministic_ode(
+        i0,
         e0,
         beta,
+        betareduction,
         sigma,
         theta,
         gamma,
@@ -99,15 +108,18 @@ def deterministic_ode(
 
     # All living, non-recovered individuals in states above exposed can pass the virus
     # beta does not depend on age
+    beta = np.concatenate(
+        (beta, beta * betareduction), axis=2
+    )
     beta = beta[..., ERA_INDICES[:-1]]
 
     # All states except susceptible and critical can progress
     # Progression depends on age and detection status
     sigma = np.concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 2, 1, 1, 1))), axis=3
+        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))), axis=3
     )  # recovered can't progress
     sigma = np.concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 2, 2, 1, 1))), axis=4
+        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))), axis=4
     )  # dead can't progress
 
     # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
@@ -123,9 +135,9 @@ def deterministic_ode(
     )  # dead aren't tested
 
     # Recovery
-    gamma = np.concatenate((np.zeros((1, N_AGES, 2, 1, 1, 1)), gamma), axis=0)
+    gamma = np.concatenate((np.zeros((1, N_AGES, 1, 1, 1, 1)), gamma), axis=0)
     gamma = np.concatenate(
-        (gamma, np.zeros((N_STATES, N_AGES, 2, 1, 1, 1))), axis=4
+        (gamma, np.zeros((N_STATES, N_AGES, 1, 1, 1, 1))), axis=4
     )  # dead can't recover
 
     # Lethality
@@ -142,35 +154,38 @@ def deterministic_ode(
     y[1, :, 0, 0, 0, 0] = e0
     y0 = y[..., :1]
     for i in range(1, N_T):
-        newly_exposed = (
-            y0[:1] * np.sum(
-                y0[N_INERT_STATES:, :, :, :1, :1] * beta[..., i - 1: i],
-                axis=(0, 1, 2, 3, 4),
-                keepdims=True,
-            ) / POPULATION
-        )
 
-        disease_progressed = y0[1:-1] * sigma
-        detections = y0[:, :, :1, :, :, :] * theta
-        recoveries = y0[:, :, :, :1, :, :] * gamma
-        deaths = y0[:, :, :, :, :1, :] * mu
+        if i >= i0:
 
-        dy = np.concatenate((-newly_exposed, newly_exposed, disease_progressed), axis=0)
-        z = np.zeros((1, N_AGES, 2, 2, 2, 1))
-        dy += np.concatenate((z, -disease_progressed, z), axis=0)
-        dy += np.concatenate((-detections, detections), axis=2)
-        dy += np.concatenate((-recoveries, recoveries), axis=3)
-        dy += np.concatenate((-deaths, deaths), axis=4)
+            newly_exposed = (
+                y0[:1] * np.sum(
+                    y0[N_INERT_STATES:, :, :, :1, :1] * beta[..., i - 1: i],
+                    axis=(0, 1, 2, 3, 4),
+                    keepdims=True,
+                ) / POPULATION
+            )
 
-        # += has side effects we don't want
-        y0 = y0 + dy * DT
+            disease_progressed = y0[1:-1] * sigma
+            detections = y0[:, :, :1, :, :, :] * theta
+            recoveries = y0[:, :, :, :1, :, :] * gamma
+            deaths = y0[:, :, :, :, :1, :] * mu
+
+            dy = np.concatenate((-newly_exposed, newly_exposed, disease_progressed), axis=0)
+            z = np.zeros((1, N_AGES, 2, 2, 2, 1))
+            dy += np.concatenate((z, -disease_progressed, z), axis=0)
+            dy += np.concatenate((-detections, detections), axis=2)
+            dy += np.concatenate((-recoveries, recoveries), axis=3)
+            dy += np.concatenate((-deaths, deaths), axis=4)
+
+            # += has side effects we don't want
+            y0 = y0 + dy * DT
 
         y[..., i: i + 1] = y0
 
-    return y + 0.01
+    return y # + 0.01
 
 
-y_kwargs = deterministic_ode(**{k: np.exp(v) for k, v in kwargs.items()})
+# y_kwargs = deterministic_ode(**{k: np.exp(v) for k, v in kwargs.items()})
 
 SD = 2.0  # Default sigma for weakly informative Lognormal priors
 
@@ -179,7 +194,7 @@ SD = 2.0  # Default sigma for weakly informative Lognormal priors
 def simple_obs_model(name, mu, c0=10.0, c1=0.04, normal=pm.Normal):
     mu = mu.sum(axis=(0, 1, 2, 3, 4))
     sd = np.sqrt(c0 ** 2 + c1 ** 2 * mu * mu)
-    return normal(name, mu=mu, sd=sd, observed=lombardia[name])
+    return normal(name=name, mu=mu, sd=sd, observed=lombardia[name])
 
 
 def compare_y_to_data(y, normal=pm.Normal):
@@ -226,6 +241,18 @@ def compare_y_to_data(y, normal=pm.Normal):
     )
     normal(name='lethality_by_age', mu=f, sd=4.0, observed=data_lethality)
 
+    # Total % asymptomatic from https://www.medrxiv.org/content/10.1101/2020.04.17.20053157v1.full.pdf
+    # Second survey conducted 7 March 2020
+    # This was done with swabs and so only detects active infections
+    # Add a small bias to the denominator to avoid divide by zero
+    f = 100 * y[2, :, :, :1, :1].sum(axis=(0, 1, 2, 3)) / (y[2:, :, :, :1, :1].sum(axis=(0, 1, 2, 3, 4)) + 0.01)
+    normal(name='percent asymptomatic by sero-survey', mu=f, sd=SD_ASYMPTOMATIC, observed=PERCENT_ASYMPTOMATIC)
+
+
+def regularize(y, normal=pm.Normal, exponential=pm.Exponential):
+    # Encourage undetected critical cases to be low
+    exponential(name='undetected critical', lam=1 / 10.0, observed=y[-1, :, 0, :, :].sum(axis=(0, 1, 2)))
+
 
 def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     # All living, non-recovered individuals in states above exposed can pass the virus
@@ -235,10 +262,10 @@ def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     # All states except susceptible and critical can progress
     # Progression depends on age and detection status
     sigma = np.concatenate(
-        [sigma, np.zeros((N_STATES - 2, N_AGES, 2, 1, 1, 1))], axis=3
+        [sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))], axis=3
     )  # recovered can't progress
     sigma = np.concatenate(
-        [sigma, np.zeros((N_STATES - 2, N_AGES, 2, 2, 1, 1))], axis=4
+        [sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))], axis=4
     )  # dead can't progress
 
     # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
@@ -310,71 +337,71 @@ def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     pm.Potential(name='sde', var=logp)
 
 
-def make_pymc_model():  # should be called within a pymc3.Model context
-
-    # All living, non-recovered individuals in states above exposed can pass the virus
-    # beta does not depend on age
-    beta = pm.Lognormal(
-        name='ibeta',
-        mu=kwargs['beta'],
-        sd=SD,
-        testval=np.exp(kwargs['beta']),
-        shape=(N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS),
-        # shape=(N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS),
-    )
-
-    # All states except susceptible and critical can progress
-    # Progression depends on age and detection status
-    sigma = pm.Lognormal(
-        name='sigma',
-        mu=kwargs['sigma'],
-        sd=SD,
-        testval=np.exp(kwargs['sigma']),
-        shape=(N_STATES - 2, N_AGES, 2, 1, 1, 1),
-    )
-
-    # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
-    # How is their data incorporated? Is it back-dated or listed at the test date?
-    theta = pm.Lognormal(
-        name='theta',
-        mu=kwargs['theta'],
-        sd=SD,
-        testval=np.exp(kwargs['theta']),
-        shape=(N_STATES - 1, 1, 1, 1, 1, 1),
-    )
-
-    # Recovery
-    gamma = pm.Lognormal(
-        name='gamma',
-        mu=kwargs['gamma'],
-        sd=SD,
-        testval=np.exp(kwargs['gamma']),
-        shape=(N_STATES - 1, N_AGES, 2, 1, 1, 1),
-    )
-
-    # Lethality
-    mu = pm.Lognormal(
-        name='mu',
-        mu=kwargs['mu'],
-        sd=SD,
-        testval=np.exp(kwargs['mu']),
-        shape=(N_LETHAL_STATES, N_AGES, 2, 1, 1, 1),
-    )
-
-    # All the states (enforce the total strictly)
-    y = pm.Lognormal(
-        name='cy',
-        mu=9,
-        sd=3,
-        shape=(N_STATES, N_AGES, 2, 2, 2, N_T),
-        testval=y_kwargs,
-    )
-    y /= y.sum(axis=(0, 2, 3, 4), keepdims=True)
-    y *= np.reshape(AGE_POP, (1, N_AGES, 1, 1, 1, 1))
-    y = pm.Deterministic(name='y', var=y)
-
-    compare_y_to_data(y)
-    adjudicate_y(y, beta, sigma, theta, gamma, mu)
+# def make_pymc_model():  # should be called within a pymc3.Model context
+#
+#     # All living, non-recovered individuals in states above exposed can pass the virus
+#     # beta does not depend on age
+#     beta = pm.Lognormal(
+#         name='ibeta',
+#         mu=kwargs['beta'],
+#         sd=SD,
+#         testval=np.exp(kwargs['beta']),
+#         shape=(N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS),
+#         # shape=(N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS),
+#     )
+#
+#     # All states except susceptible and critical can progress
+#     # Progression depends on age and detection status
+#     sigma = pm.Lognormal(
+#         name='sigma',
+#         mu=kwargs['sigma'],
+#         sd=SD,
+#         testval=np.exp(kwargs['sigma']),
+#         shape=(N_STATES - 2, N_AGES, 2, 1, 1, 1),
+#     )
+#
+#     # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
+#     # How is their data incorporated? Is it back-dated or listed at the test date?
+#     theta = pm.Lognormal(
+#         name='theta',
+#         mu=kwargs['theta'],
+#         sd=SD,
+#         testval=np.exp(kwargs['theta']),
+#         shape=(N_STATES - 1, 1, 1, 1, 1, 1),
+#     )
+#
+#     # Recovery
+#     gamma = pm.Lognormal(
+#         name='gamma',
+#         mu=kwargs['gamma'],
+#         sd=SD,
+#         testval=np.exp(kwargs['gamma']),
+#         shape=(N_STATES - 1, N_AGES, 2, 1, 1, 1),
+#     )
+#
+#     # Lethality
+#     mu = pm.Lognormal(
+#         name='mu',
+#         mu=kwargs['mu'],
+#         sd=SD,
+#         testval=np.exp(kwargs['mu']),
+#         shape=(N_LETHAL_STATES, N_AGES, 2, 1, 1, 1),
+#     )
+#
+#     # All the states (enforce the total strictly)
+#     y = pm.Lognormal(
+#         name='cy',
+#         mu=9,
+#         sd=3,
+#         shape=(N_STATES, N_AGES, 2, 2, 2, N_T),
+#         testval=y_kwargs,
+#     )
+#     y /= y.sum(axis=(0, 2, 3, 4), keepdims=True)
+#     y *= np.reshape(AGE_POP, (1, N_AGES, 1, 1, 1, 1))
+#     y = pm.Deterministic(name='y', var=y)
+#
+#     compare_y_to_data(y)
+#     adjudicate_y(y, beta, sigma, theta, gamma, mu)
 
 
 class EarlyOut(Exception):
@@ -385,29 +412,61 @@ class Logp:
     def __init__(self):
         self.value = 0.0
 
-    def add_norm_logpdf(self, name, mu, sd, observed):
+    def add_norm_logpdf(self, *, name, mu, sd, observed):
         offset = observed - mu
         self.value += np.sum(-(offset * offset) / (sd * sd) / 2 - np.log(sd))
         if not np.isfinite(self.value):
             raise EarlyOut
 
+    def add_exp_logpdf(self, *, name, lam, observed):
+        self.value += np.sum(np.log(lam) - observed * lam)
+        if not np.isfinite(self.value):
+            raise EarlyOut
 
-def func_nevergrad(
+
+def ng_deterministic_ode(
+        i0,
         e0,
         beta,
+        beta_reduction,
+        sigma,
+        theta,
+        gamma,
+        mu
+):
+    """Run the ODE the transformed nevergrad arguments"""
+    return deterministic_ode(
+        i0,
+        np.exp(e0),
+        np.exp(beta),
+        (np.tanh(beta_reduction) + 1) / 2,
+        np.exp(sigma),
+        np.exp(theta),
+        np.exp(gamma),
+        np.exp(mu),
+    )
+
+
+def func_nevergrad(
+        i0,
+        e0,
+        beta,
+        beta_reduction,
         sigma,
         theta,
         gamma,
         mu
 ):
     logp = Logp()
-    y = deterministic_ode(
-        np.exp(e0),
-        np.exp(beta),
-        np.exp(sigma),
-        np.exp(theta),
-        np.exp(gamma),
-        np.exp(mu),
+    y = ng_deterministic_ode(
+        i0,
+        e0,
+        beta,
+        beta_reduction,
+        sigma,
+        theta,
+        gamma,
+        mu
     )
     if np.any(y < 0):
         return float('inf')
@@ -415,6 +474,9 @@ def func_nevergrad(
         return float('inf')
     try:
         compare_y_to_data(y, logp.add_norm_logpdf)
+        regularize(y, logp.add_norm_logpdf, logp.add_exp_logpdf)
+        # Encourage start date to be early
+        logp.add_exp_logpdf(name='i0', lam=1 / 1.0, observed=i0)
     except EarlyOut:
         return float('inf')
     return -logp.value
@@ -423,17 +485,20 @@ def func_nevergrad(
 def run_nevergrad():
     # Guess initial values
 
+    i0 = 0
     e0 = np.log(10) * np.ones(N_AGES)
-    beta = - np.log(15) * np.ones((N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS))
+    beta = - np.log(15) * np.ones((N_HIDDEN_STATES + N_LETHAL_STATES, 1, 1, 1, 1, N_ERAS))
+    # transmission is reduced when detected
+    beta_reduction = np.ones((N_HIDDEN_STATES + N_LETHAL_STATES, 1, 1, 1, 1, N_ERAS))
     # beta = - np.log(15) * np.ones((N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS))
-    sigma = - np.log(3) * np.ones((N_STATES - 2, N_AGES, 2, 1, 1, 1))
+    sigma = - np.log(3) * np.ones((N_STATES - 2, N_AGES, 1, 1, 1, 1))
     theta = - np.log(12) * np.ones((N_STATES - 1, 1, 1, 1, 1, 1))
-    gamma = - np.log(100) * np.ones((N_STATES - 1, N_AGES, 2, 1, 1, 1))
+    gamma = - np.log(100) * np.ones((N_STATES - 1, N_AGES, 1, 1, 1, 1))
     mu = - np.log(100) * np.ones((N_LETHAL_STATES, N_AGES, 2, 1, 1, 1))
 
     # OR, start from previous saved parameters
 
-    # with open('sample_sde_may8.pkl', 'rb') as f:
+    # with open('tmp.pkl', 'rb') as f:
     #     kwargs = pickle.load(f)
     # e0 = kwargs['e0']
     # beta = kwargs['beta']
@@ -443,8 +508,10 @@ def run_nevergrad():
     # mu = kwargs['mu']
 
     print(func_nevergrad(
+        i0,
         e0,
         beta,
+        beta_reduction,
         sigma,
         theta,
         gamma,
@@ -453,8 +520,10 @@ def run_nevergrad():
 
     # Use kwargs only
     instrum = ng.p.Instrumentation(
+        i0=ng.p.Scalar(lower=0, upper=14 * N_PER_DAY),
         e0=ng.p.Array(init=e0),
         beta=ng.p.Array(init=beta),
+        beta_reduction=ng.p.Array(init=beta_reduction),
         sigma=ng.p.Array(init=sigma),
         theta=ng.p.Array(init=theta),
         gamma=ng.p.Array(init=gamma),
@@ -462,24 +531,25 @@ def run_nevergrad():
     )
 
     # optimizer = ng.optimizers.ParaPortfolio
+    # optimizer = ng.optimizers.OnePlusOne
     optimizer = ng.optimizers.TwoPointsDE
-    kwargs, best_kwargs = util.fit_nevergrad_model(instrum, 2_000_000, optimizer, func_nevergrad,
+    kwargs, best_kwargs = util.fit_nevergrad_model(instrum, 1_000_000, optimizer, func_nevergrad,
                                                    num_workers=8, num_processes=8, save_after=2_000)
     with open('sample_sde.pkl', 'wb') as f:
         pickle.dump(kwargs, f)
 
 
-def run_pymc3():
-    with pm.Model():
-        make_pymc_model()
-        trace = pm.sample(
-            200,
-            tune=200,
-            target_accept=0.99,
-            compute_convergence_checks=False,
-            chains=3,
-            trace=pm.backends.Text(name='trace'),
-        )
+# def run_pymc3():
+#     with pm.Model():
+#         make_pymc_model()
+#         trace = pm.sample(
+#             200,
+#             tune=200,
+#             target_accept=0.99,
+#             compute_convergence_checks=False,
+#             chains=3,
+#             trace=pm.backends.Text(name='trace'),
+#         )
 
 
 if __name__ == '__main__':
