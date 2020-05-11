@@ -58,28 +58,27 @@ data_severity = np.array(severity[['asintomatico', 'pauci-lieve', 'severo', 'cri
 data_severity *= 100 / (100 - severity['sintomatico non specificato'])
 
 idx_deaths = tuple(idx_time.asof(deaths['day']).astype(int))
-deaths['0-49'] = (
-        deaths['0-9'] + deaths['10-19'] + deaths['20-29'] + deaths['30-39'] + deaths['40-49']
-)
-deaths['50-69'] = deaths['50-59'] + deaths['60-69']
-deaths['>=70'] = deaths['70-79'] + deaths['80-89'] + deaths['>=90']
-data_deaths = np.array(deaths[['0-49', '50-69', '>=70']]).T
+# Adjust for imperfect alignment with age groups in % cases data
+c50 = (deaths['40-49'] + deaths['50-59']) / 2 / 10
+c70 = (deaths['60-69'] + deaths['70-79']) / 2 / 10
+deaths['0-50'] = deaths['0-9'] + deaths['10-19'] + deaths['20-29'] + deaths['30-39'] + deaths['40-49'] + c50
+deaths['51-70'] = deaths['50-59'] - c50 + deaths['60-69'] + c70
+deaths['>70'] = deaths['70-79'] - c70 + deaths['80-89'] + deaths['>=90']
+data_deaths = np.array(deaths[['0-50', '51-70', '>70']]).T
 
 idx_lethality = tuple(idx_time.asof(lethality['day']).astype(int))
 # lethality can't just be added, we need to recompute it for our age groups
 cases = (deaths.set_index('day') / (lethality.set_index('day') / 100)).fillna(0).astype(int)
-cases['0-49'] = (
-        cases['0-9'] + cases['10-19'] + cases['20-29'] + cases['30-39'] + cases['40-49']
-)
-cases['50-69'] = cases['50-59'] + cases['60-69']
-cases['>=70'] = cases['70-79'] + cases['80-89'] + cases['>=90']
-data_lethality = 100 * data_deaths / np.array(cases[['0-49', '50-69', '>=70']]).T
+c50 = (cases['40-49'] + cases['50-59']) / 2 / 10
+c70 = (cases['60-69'] + cases['70-79']) / 2 / 10
+cases['0-50'] = cases['0-9'] + cases['10-19'] + cases['20-29'] + cases['30-39'] + cases['40-49'] + c50
+cases['51-70'] = cases['50-59'] - c50 + cases['60-69'] + c70
+cases['>70'] = cases['70-79'] - c70 + cases['80-89'] + cases['>=90']
+data_lethality = 100 * data_deaths / np.array(cases[['0-50', '51-70', '>70']]).T
 # For analysis outside this script, wrote the values back to the dataframe
-for i, age in enumerate(['0-49', '50-69', '>=70']):
+for i, age in enumerate(['0-50', '51-70', '>70']):
     lethality[age] = data_lethality[i]
 
-# These age groups don't align perfectly with the others but they are close.
-# Should we adjust for that?
 idx_cases = tuple(idx_time.asof(cases_by_age['day']).astype(int))
 cases_by_age['0-50'] = cases_by_age['0-18'] + cases_by_age['19-50']
 data_cases = np.array(cases_by_age[['0-50', '51-70', '>70']]).T
@@ -224,10 +223,12 @@ def compare_y_to_data(y, normal=pm.Normal):
     normal(name='deaths_by_age', mu=f, sd=sd, observed=data_deaths)
 
     # Observe stats on breakdown by severity, age
-    # Fraction of cases by severity
-    f = y[N_INERT_STATES:, :, 1:, :1, :1, idx_severity].sum(axis=(1, 2, 3, 4))
-    f = f / f.sum(axis=0, keepdims=True) * 100
-    normal(name='percent_by_severity', mu=f, sd=4.0, observed=data_severity)
+
+    # # Fraction of cases by severity (Very difficult to fit. Maybe I'm interpreting the data incorrectly?)
+    # f = y[N_INERT_STATES:, :, 1:, :1, :1, idx_severity].sum(axis=(1, 2, 3, 4))
+    # f = f / f.sum(axis=0, keepdims=True) * 100
+    # normal(name='percent_by_severity', mu=f, sd=4.0, observed=data_severity)
+
     # Fraction of cases by age
     f = y[N_INERT_STATES:, :, 1:, :, :, idx_cases].sum(axis=(0, 2, 3, 4))
     f = f / f.sum(axis=1, keepdims=True) * 100
