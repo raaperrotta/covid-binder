@@ -500,13 +500,13 @@ def run_nevergrad():
     i0 = 0
     e0 = np.log(10) * np.ones(N_AGES)
     # beta = - np.log(20) * np.ones((N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 1, 1, 1, 1))
-    beta = - np.log(12) * np.ones((1, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 1, 1, 1, 1))
+    beta = - np.log(20) * np.ones((1, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 1, 1, 1, 1))
     # # transmission is reduced when detected
     beta_detected_ratio = np.ones_like(beta)
     beta_era_ratios = np.ones((1, 1, 1, 1, 1, 1, N_ERAS - 1))
-    sigma = - np.log(3) * np.ones((N_STATES - 2, N_AGES, 1, 1, 1, 1))
-    theta = - np.log(12) * np.ones((N_STATES - 1, 1, 1, 1, 1, 1))
-    gamma = - np.log(100) * np.ones((N_STATES - 1, N_AGES, 1, 1, 1, 1))
+    sigma = - np.log(2) * np.ones((N_STATES - 2, N_AGES, 1, 1, 1, 1))
+    theta = - np.log(1) * np.ones((N_STATES - 1, 1, 1, 1, 1, 1))
+    gamma = - np.log(20) * np.ones((N_STATES - 1, N_AGES, 1, 1, 1, 1))
     mu = - np.log(100) * np.ones((N_LETHAL_STATES, N_AGES, 2, 1, 1, 1))
 
     # OR, start from previous saved parameters
@@ -551,8 +551,8 @@ def run_nevergrad():
     # optimizer = ng.optimizers.ParaPortfolio
     # optimizer = ng.optimizers.OnePlusOne
     # optimizer = ng.optimizers.ScrHammersleySearch
-    # optimizer = ng.optimizers.TwoPointsDE  # best so far
-    optimizer = ng.optimizers.DifferentialEvolution(crossover="twopoints", popsize='large')
+    optimizer = ng.optimizers.TwoPointsDE  # best so far
+    # optimizer = ng.optimizers.DifferentialEvolution(crossover="twopoints", popsize='large')
     # optimizer = ng.optimizers.DE
     kwargs, best_kwargs = util.fit_nevergrad_model(instrum, 2_000_000, optimizer, func_nevergrad,
                                                    num_workers=8, num_processes=8, save_after=2_000)
