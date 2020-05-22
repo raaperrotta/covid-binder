@@ -1,12 +1,20 @@
+import logging
 import pickle
+import warnings
 
+import click
 import nevergrad as ng
 import numpy as np
 import pandas as pd
 import pymc3 as pm
+import theano.tensor as tt
 
-from seir import util
+from .util import fit_nevergrad_model
 
+warnings.simplefilter(action='ignore', category=FutureWarning)
+
+logging.basicConfig(level=logging.DEBUG)
+logging.debug('Log configured')
 
 regioni = pd.read_csv(
     'https://raw.githubusercontent.com/pcm-dpc/COVID-19/master/dati-regioni/dpc-covid19-ita-regioni.csv',
@@ -37,10 +45,10 @@ AGE_POP = POPULATION * AGE_DIST
 
 N_PER_DAY = 4  # must divide 24 evenly
 DT = 1 / N_PER_DAY
-T = pd.date_range('8 Feb 2020', '15 May 2020', freq=f'{24 // N_PER_DAY}h')
+T = pd.date_range('8 Feb 2020', '1 Jun 2020', freq=f'{24 // N_PER_DAY}h')
 N_T = len(T)
 
-ERA_STARTS = pd.to_datetime(['1 Mar 2020', '21 Mar 2020'])
+ERA_STARTS = np.array(pd.to_datetime(['1 Mar 2020', '21 Mar 2020', '4 May 2020']))
 N_ERAS = len(ERA_STARTS) + 1
 ERA_INDICES = np.sum(np.array(T) > ERA_STARTS[:, None], axis=0) if N_ERAS > 1 else [0] * N_T
 
@@ -94,6 +102,90 @@ with open('sample_sde_may8.pkl', 'rb') as f:
     kwargs = pickle.load(f)
 
 
+def log_tensor(x):
+    logging.debug((x.shape, x.broadcastable))
+
+
+def f(
+        y,
+        beta,
+        sigma,
+        theta,
+        gamma,
+        mu,
+        concatenate=np.concatenate,
+):
+    newly_exposed = (
+            (y[0, :, None, None, ...] * y[None, N_INERT_STATES:, :, :, 0, None, 0, None, :] * beta).sum(
+                axis=(0, 1),
+                keepdims=True,
+            ) / POPULATION
+    )[0, ...]  # index as an easy way to drop first dim, which has size 1 anyway
+
+    disease_progressed = y[1:-1, ...] * sigma
+    detections = y[:, :, 0, None, ...] * theta
+    recoveries = y[:, :, :, 0, None, :, ...] * gamma
+    deaths = y[:, :, :, :, 0, None, ...] * mu
+
+    dy = concatenate((-newly_exposed, newly_exposed, disease_progressed), axis=0)
+    z = disease_progressed[:1, ...] * 0
+    dy += concatenate((z, -disease_progressed, z), axis=0)
+    dy += concatenate((-detections, detections), axis=2)
+    dy += concatenate((-recoveries, recoveries), axis=3)
+    dy += concatenate((-deaths, deaths), axis=4)
+
+    return dy
+
+
+def pad(beta, beta_detected_ratio, beta_era_ratios, sigma, theta, gamma, mu, concatenate=np.concatenate):
+    # All living, non-recovered individuals in states above exposed can pass the virus
+    # beta does not depend on age
+    beta = concatenate(
+        (beta, beta * beta_detected_ratio), axis=3
+    )
+    beta_era_ratios = concatenate(
+        (np.ones((1, 1, 1, 1, 1, 1, 1)), beta_era_ratios), axis=-1
+    )
+    beta = beta * beta_era_ratios[..., ERA_INDICES[:-1]]
+
+    # All states except susceptible and critical can progress
+    # Progression depends on age and detection status
+    sigma = concatenate(
+        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))), axis=3
+    )  # recovered can't progress
+    sigma = concatenate(
+        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))), axis=4
+    )  # dead can't progress
+
+    # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
+    # How is their data incorporated? Is it back-dated or listed at the test date?
+    theta = concatenate(
+        (np.zeros((1, 1, 1, 1, 1, 1)), theta), axis=0
+    )  # susceptible don't test positive
+    theta = concatenate(
+        (theta, np.zeros((N_STATES, 1, 1, 1, 1, 1))), axis=3
+    )  # recovered aren't tested
+    theta = concatenate(
+        (theta, np.zeros((N_STATES, 1, 1, 2, 1, 1))), axis=4
+    )  # dead aren't tested
+
+    # Recovery
+    gamma = concatenate((np.zeros((1, N_AGES, 1, 1, 1, 1)), gamma), axis=0)
+    gamma = concatenate(
+        (gamma, np.zeros((N_STATES, N_AGES, 1, 1, 1, 1))), axis=4
+    )  # dead can't recover
+
+    # Lethality
+    mu = concatenate(
+        (np.zeros((N_INERT_STATES + N_HIDDEN_STATES, N_AGES, 2, 1, 1, 1)), mu), axis=0
+    )
+    mu = concatenate(
+        (mu, np.zeros((N_STATES, N_AGES, 2, 1, 1, 1))), axis=3
+    )  # recovered can't die
+
+    return beta, sigma, theta, gamma, mu
+
+
 def deterministic_ode(
         i0,
         e0,
@@ -105,51 +197,7 @@ def deterministic_ode(
         gamma,
         mu
 ):
-
-    # All living, non-recovered individuals in states above exposed can pass the virus
-    # beta does not depend on age
-    beta = np.concatenate(
-        (beta, beta * beta_detected_ratio), axis=3
-    )
-    beta_era_ratios = np.concatenate(
-        (np.ones_like(beta_era_ratios[..., :1]), beta_era_ratios), axis=-1
-    )
-    beta = beta * beta_era_ratios[..., ERA_INDICES[:-1]]
-
-    # All states except susceptible and critical can progress
-    # Progression depends on age and detection status
-    sigma = np.concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))), axis=3
-    )  # recovered can't progress
-    sigma = np.concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))), axis=4
-    )  # dead can't progress
-
-    # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
-    # How is their data incorporated? Is it back-dated or listed at the test date?
-    theta = np.concatenate(
-        (np.zeros((1, 1, 1, 1, 1, 1)), theta), axis=0
-    )  # susceptible don't test positive
-    theta = np.concatenate(
-        (theta, np.zeros((N_STATES, 1, 1, 1, 1, 1))), axis=3
-    )  # recovered aren't tested
-    theta = np.concatenate(
-        (theta, np.zeros((N_STATES, 1, 1, 2, 1, 1))), axis=4
-    )  # dead aren't tested
-
-    # Recovery
-    gamma = np.concatenate((np.zeros((1, N_AGES, 1, 1, 1, 1)), gamma), axis=0)
-    gamma = np.concatenate(
-        (gamma, np.zeros((N_STATES, N_AGES, 1, 1, 1, 1))), axis=4
-    )  # dead can't recover
-
-    # Lethality
-    mu = np.concatenate(
-        (np.zeros((N_INERT_STATES + N_HIDDEN_STATES, N_AGES, 2, 1, 1, 1)), mu), axis=0
-    )
-    mu = np.concatenate(
-        (mu, np.zeros((N_STATES, N_AGES, 2, 1, 1, 1))), axis=3
-    )  # recovered can't die
+    beta, sigma, theta, gamma, mu = pad(beta, beta_detected_ratio, beta_era_ratios, sigma, theta, gamma, mu)
 
     # Generate a testval for y that follows our Euler-integrated ODE using the mean values for the parameters
     y = np.zeros((N_STATES, N_AGES, 2, 2, 2, N_T))
@@ -160,35 +208,14 @@ def deterministic_ode(
 
         if i >= i0:
 
-            newly_exposed = (
-                np.sum(
-                    y0[0, :, None, None, ...] * y0[None, N_INERT_STATES:, :, :, :1, :1] * beta[..., i - 1: i],
-                    axis=(0, 1),
-                    keepdims=True,
-                ) / POPULATION
-            )[0]  # index as an easy way to drop first dim, which has size 1 anyway
-
-            disease_progressed = y0[1:-1] * sigma
-            detections = y0[:, :, :1, :, :, :] * theta
-            recoveries = y0[:, :, :, :1, :, :] * gamma
-            deaths = y0[:, :, :, :, :1, :] * mu
-
-            dy = np.concatenate((-newly_exposed, newly_exposed, disease_progressed), axis=0)
-            z = np.zeros((1, N_AGES, 2, 2, 2, 1))
-            dy += np.concatenate((z, -disease_progressed, z), axis=0)
-            dy += np.concatenate((-detections, detections), axis=2)
-            dy += np.concatenate((-recoveries, recoveries), axis=3)
-            dy += np.concatenate((-deaths, deaths), axis=4)
-
+            dy = f(y0, beta[..., i - 1: i], sigma, theta, gamma, mu)
             # += has side effects we don't want
             y0 = y0 + dy * DT
 
         y[..., i: i + 1] = y0
 
-    return y # + 0.01
+    return y  # + 0.01
 
-
-# y_kwargs = deterministic_ode(**{k: np.exp(v) for k, v in kwargs.items()})
 
 SD = 2.0  # Default sigma for weakly informative Lognormal priors
 
@@ -259,43 +286,8 @@ def regularize(y, normal=pm.Normal, exponential=pm.Exponential):
     exponential(name='undetected critical', lam=1 / 10.0, observed=y[-1, :, 0, :, :].sum(axis=(0, 1, 2)))
 
 
-def adjudicate_y(y, beta, sigma, theta, gamma, mu):
-    # All living, non-recovered individuals in states above exposed can pass the virus
-    # beta does not depend on age
-    beta = beta[..., ERA_INDICES[:-1]]
-
-    # All states except susceptible and critical can progress
-    # Progression depends on age and detection status
-    sigma = np.concatenate(
-        [sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))], axis=3
-    )  # recovered can't progress
-    sigma = np.concatenate(
-        [sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))], axis=4
-    )  # dead can't progress
-
-    # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
-    # How is their data incorporated? Is it back-dated or listed at the test date?
-    theta = np.concatenate([np.zeros((1, 1, 1, 1, 1, 1)), theta], axis=0)
-    theta = np.concatenate(
-        [theta, np.zeros((N_STATES, 1, 1, 1, 1, 1))], axis=3
-    )  # recovered aren't tested
-    theta = np.concatenate(
-        [theta, np.zeros((N_STATES, 1, 1, 2, 1, 1))], axis=4
-    )  # dead aren't tested
-
-    # Recovery
-    gamma = np.concatenate([np.zeros((1, N_AGES, 2, 1, 1, 1)), gamma], axis=0)
-    gamma = np.concatenate(
-        [gamma, np.zeros((N_STATES, N_AGES, 2, 1, 1, 1))], axis=4
-    )  # dead can't recover
-
-    # Lethality
-    mu = np.concatenate(
-        [np.zeros((N_INERT_STATES + N_HIDDEN_STATES, N_AGES, 2, 1, 1, 1)), mu], axis=0
-    )
-    mu = np.concatenate(
-        [mu, np.zeros((N_STATES, N_AGES, 2, 1, 1, 1))], axis=3
-    )  # recovered can't die
+def adjudicate_y(y, beta, beta_detected_ratio, beta_era_ratios, sigma, theta, gamma, mu):
+    beta, sigma, theta, gamma, mu = pad(beta, beta_detected_ratio, beta_era_ratios, sigma, theta, gamma, mu, tt.concatenate)
 
     # Observe to restrict initial conditions
     # Most categories should be zero at the start
@@ -319,22 +311,7 @@ def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     # Compute the likelihood of each state based on the SDE and the prior state
     y0 = y[..., :-1]
 
-    newly_exposed = (
-            (y0[:1] * y0[N_INERT_STATES:, :, :, :1, :1] * beta)
-            .sum(axis=(0, 1, 2, 3, 4), keepdims=True)
-            / POPULATION
-    )
-    disease_progressed = y0[1:-1] * sigma
-    detections = y0[:, :, :1, :, :, :] * theta
-    recoveries = y0[:, :, :, :1, :, :] * gamma
-    deaths = y0[:, :, :, :, :1, :] * mu
-
-    dy = np.concatenate([-newly_exposed, newly_exposed, disease_progressed], axis=0)
-    z = np.zeros((1, N_AGES, 2, 2, 2, N_T - 1))
-    dy += np.concatenate([z, -disease_progressed, z], axis=0)
-    dy += np.concatenate([-detections, detections], axis=2)
-    dy += np.concatenate([-recoveries, recoveries], axis=3)
-    dy += np.concatenate([-deaths, deaths], axis=4)
+    dy = f(y0, beta, sigma, theta, gamma, mu, tt.concatenate)
 
     mu = y0 + DT * dy
     sd = np.sqrt(DT * ((2.0 ** 2) + (0.02 ** 2 * y0 * y0)))
@@ -342,71 +319,98 @@ def adjudicate_y(y, beta, sigma, theta, gamma, mu):
     pm.Potential(name='sde', var=logp)
 
 
-# def make_pymc_model():  # should be called within a pymc3.Model context
-#
-#     # All living, non-recovered individuals in states above exposed can pass the virus
-#     # beta does not depend on age
-#     beta = pm.Lognormal(
-#         name='ibeta',
-#         mu=kwargs['beta'],
-#         sd=SD,
-#         testval=np.exp(kwargs['beta']),
-#         shape=(N_HIDDEN_STATES + N_LETHAL_STATES, 1, 2, 1, 1, N_ERAS),
-#         # shape=(N_AGES, N_HIDDEN_STATES + N_LETHAL_STATES, N_AGES, 2, 1, 1, N_ERAS),
-#     )
-#
-#     # All states except susceptible and critical can progress
-#     # Progression depends on age and detection status
-#     sigma = pm.Lognormal(
-#         name='sigma',
-#         mu=kwargs['sigma'],
-#         sd=SD,
-#         testval=np.exp(kwargs['sigma']),
-#         shape=(N_STATES - 2, N_AGES, 2, 1, 1, 1),
-#     )
-#
-#     # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
-#     # How is their data incorporated? Is it back-dated or listed at the test date?
-#     theta = pm.Lognormal(
-#         name='theta',
-#         mu=kwargs['theta'],
-#         sd=SD,
-#         testval=np.exp(kwargs['theta']),
-#         shape=(N_STATES - 1, 1, 1, 1, 1, 1),
-#     )
-#
-#     # Recovery
-#     gamma = pm.Lognormal(
-#         name='gamma',
-#         mu=kwargs['gamma'],
-#         sd=SD,
-#         testval=np.exp(kwargs['gamma']),
-#         shape=(N_STATES - 1, N_AGES, 2, 1, 1, 1),
-#     )
-#
-#     # Lethality
-#     mu = pm.Lognormal(
-#         name='mu',
-#         mu=kwargs['mu'],
-#         sd=SD,
-#         testval=np.exp(kwargs['mu']),
-#         shape=(N_LETHAL_STATES, N_AGES, 2, 1, 1, 1),
-#     )
-#
-#     # All the states (enforce the total strictly)
-#     y = pm.Lognormal(
-#         name='cy',
-#         mu=9,
-#         sd=3,
-#         shape=(N_STATES, N_AGES, 2, 2, 2, N_T),
-#         testval=y_kwargs,
-#     )
-#     y /= y.sum(axis=(0, 2, 3, 4), keepdims=True)
-#     y *= np.reshape(AGE_POP, (1, N_AGES, 1, 1, 1, 1))
-#     y = pm.Deterministic(name='y', var=y)
-#
-#     compare_y_to_data(y)
-#     adjudicate_y(y, beta, sigma, theta, gamma, mu)
+def make_pymc_model():  # should be called within a pymc3.Model context
+
+    logging.debug('Loading nevergrad fit to create pymc3 model initial values')
+    with open('cross_beta0.pkl', 'rb') as f:
+        kwargs = pickle.load(f)
+    i0 = kwargs['i0']
+    e0 = kwargs['e0']
+    beta = kwargs['beta']
+    beta_detected_ratio = kwargs['beta_detected_ratio']
+    beta_era_ratios = kwargs['beta_era_ratios']
+    sigma = kwargs['sigma']
+    theta = kwargs['theta']
+    gamma = kwargs['gamma']
+    mu = kwargs['mu']
+
+    logging.debug('Calculating deterministic ODE solution to be used as starting point for y')
+    y_testval = ng_deterministic_ode(
+        i0,
+        e0,
+        beta,
+        beta_detected_ratio,
+        beta_era_ratios,
+        sigma,
+        theta,
+        gamma,
+        mu
+    )
+
+    beta = pm.Lognormal(
+        name='beta',
+        mu=beta,
+        sd=SD,
+        testval=np.exp(beta),
+        shape=beta.shape,
+    )
+    beta_detected_ratio = pm.Uniform(
+        'beta_detected_ratio',
+        0,
+        1,
+        testval=sigmoid(beta_detected_ratio),
+        shape=beta_detected_ratio.shape,
+    )
+    beta_era_ratios = pm.Uniform(
+        'beta_era_ratios',
+        0,
+        1,
+        testval=sigmoid(beta_era_ratios),
+        shape=beta_era_ratios.shape,
+    )
+    sigma = pm.Lognormal(
+        name='sigma',
+        mu=sigma,
+        sd=SD,
+        testval=np.exp(sigma),
+        shape=sigma.shape,
+    )
+    theta = pm.Lognormal(
+        name='theta',
+        mu=theta,
+        sd=SD,
+        testval=np.exp(theta),
+        shape=theta.shape,
+    )
+    gamma = pm.Lognormal(
+        name='gamma',
+        mu=gamma,
+        sd=SD,
+        testval=np.exp(gamma),
+        shape=gamma.shape,
+    )
+    mu = pm.Lognormal(
+        name='mu',
+        mu=mu,
+        sd=SD,
+        testval=np.exp(mu),
+        shape=mu.shape,
+    )
+
+    # All the states (enforce the total strictly)
+    y = pm.Lognormal(
+        name='cy',
+        mu=9,
+        sd=3,
+        shape=(N_STATES, N_AGES, 2, 2, 2, N_T),
+        testval=y_testval,
+    )
+    y /= y.sum(axis=(0, 2, 3, 4), keepdims=True)
+    y *= np.reshape(AGE_POP, (1, N_AGES, 1, 1, 1, 1))
+    y = pm.Deterministic(name='y', var=y)
+
+    compare_y_to_data(y)
+    adjudicate_y(y, beta, beta_detected_ratio, beta_era_ratios, sigma, theta, gamma, mu)
 
 
 class EarlyOut(Exception):
@@ -429,6 +433,10 @@ class Logp:
             raise EarlyOut
 
 
+def sigmoid(x):
+    return (np.tanh(x) + 1) / 2
+
+
 def ng_deterministic_ode(
         i0,
         e0,
@@ -445,8 +453,8 @@ def ng_deterministic_ode(
         i0,
         np.exp(e0),
         np.exp(beta),
-        (np.tanh(beta_detected_ratio) + 1) / 2,
-        (np.tanh(beta_era_ratios) + 1) / 2,
+        sigmoid(beta_detected_ratio),
+        sigmoid(beta_era_ratios),
         np.exp(sigma),
         np.exp(theta),
         np.exp(gamma),
@@ -494,6 +502,12 @@ def func_nevergrad(
     return -logp.value
 
 
+@click.group()
+def cli():
+    pass
+
+
+@cli.command()
 def run_nevergrad():
     # Guess initial values
 
@@ -554,25 +568,27 @@ def run_nevergrad():
     optimizer = ng.optimizers.TwoPointsDE  # best so far
     # optimizer = ng.optimizers.DifferentialEvolution(crossover="twopoints", popsize='large')
     # optimizer = ng.optimizers.DE
-    kwargs, best_kwargs = util.fit_nevergrad_model(instrum, 2_000_000, optimizer, func_nevergrad,
-                                                   num_workers=8, num_processes=8, save_after=2_000)
+    kwargs, best_kwargs = fit_nevergrad_model(instrum, 2_000_000, optimizer, func_nevergrad,
+                                              num_workers=8, num_processes=8, save_after=2_000)
     with open('cross_beta.pkl', 'wb') as f:
         pickle.dump(kwargs, f)
 
 
-# def run_pymc3():
-#     with pm.Model():
-#         make_pymc_model()
-#         trace = pm.sample(
-#             200,
-#             tune=200,
-#             target_accept=0.99,
-#             compute_convergence_checks=False,
-#             chains=3,
-#             trace=pm.backends.Text(name='trace'),
-#         )
+@cli.command()
+def run_pymc3():
+    logging.debug('Entering model context')
+    with pm.Model():
+        make_pymc_model()
+        trace = pm.sample(
+            200,
+            tune=200,
+            target_accept=0.99,
+            compute_convergence_checks=False,
+            chains=3,
+        )
+    logging.debug('Saving trace to CSV')
+    pm.trace_to_dataframe(trace).to_csv('trace.csv')
 
 
 if __name__ == '__main__':
-    run_nevergrad()
-    # run_pymc3()
+    cli()
