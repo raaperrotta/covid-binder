@@ -113,7 +113,8 @@ def f(
 
 def pad(beta, beta_detected_ratio,
         # beta_era_ratios,
-        sigma, theta, gamma, mu, concatenate=np.concatenate):
+        # sigma,
+        theta, gamma, mu, concatenate=np.concatenate):
     # All living, non-recovered individuals in states above exposed can pass the virus
     # beta does not depend on age
     beta = concatenate(
@@ -128,11 +129,12 @@ def pad(beta, beta_detected_ratio,
 
     # All states except susceptible and critical can progress
     # Progression depends on age and detection status
+    sigma = 1 / np.array([3, 1/2, 5, 4]).reshape((N_STATES - 2, 1, 1, 1, 1, 1))
     sigma = concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 1, 1, 1))), axis=3
+        (sigma, np.zeros((N_STATES - 2, 1, 1, 1, 1, 1))), axis=3
     )  # recovered can't progress
     sigma = concatenate(
-        (sigma, np.zeros((N_STATES - 2, N_AGES, 1, 2, 1, 1))), axis=4
+        (sigma, np.zeros((N_STATES - 2, 1, 1, 2, 1, 1))), axis=4
     )  # dead can't progress
 
     # Testing: assumptions here should be verified. Are recovered or deceased individuals tested?
@@ -170,14 +172,15 @@ def deterministic_ode(
         beta,
         beta_detected_ratio,
         # beta_era_ratios,
-        sigma,
+        # sigma,
         theta,
         gamma,
         mu
 ):
     beta, sigma, theta, gamma, mu = pad(beta, beta_detected_ratio,
                                         # beta_era_ratios,
-                                        sigma, theta, gamma, mu)
+                                        # sigma,
+                                        theta, gamma, mu)
 
     # Generate a testval for y that follows our Euler-integrated ODE using the mean values for the parameters
     y = np.zeros((N_STATES, N_AGES, 2, 2, 2, N_T))
@@ -409,7 +412,7 @@ def ng_deterministic_ode(
         beta,
         beta_detected_ratio,
         # beta_era_ratios,
-        sigma,
+        # sigma,
         theta,
         gamma,
         mu
@@ -421,7 +424,7 @@ def ng_deterministic_ode(
         np.exp(beta),
         sigmoid(beta_detected_ratio),
         # sigmoid(beta_era_ratios),
-        np.exp(sigma),
+        # np.exp(sigma),
         np.exp(theta),
         np.exp(gamma),
         np.exp(mu),
@@ -434,7 +437,7 @@ def func_nevergrad(
         beta,
         beta_detected_ratio,
         # beta_era_ratios,
-        sigma,
+        # sigma,
         theta,
         gamma,
         mu
@@ -446,7 +449,7 @@ def func_nevergrad(
         beta,
         beta_detected_ratio,
         # beta_era_ratios,
-        sigma,
+        # sigma,
         theta,
         gamma,
         mu
@@ -484,7 +487,7 @@ def run_nevergrad():
     # # transmission is reduced when detected
     beta_detected_ratio = np.ones_like(beta)
     # beta_era_ratios = np.ones((1, 1, 1, 1, 1, 1, N_ERAS - 1))
-    sigma = - np.log(2) * np.ones((N_STATES - 2, N_AGES, 1, 1, 1, 1))
+    # sigma = - np.log(2) * np.ones((N_STATES - 2, N_AGES, 1, 1, 1, 1))
     theta = - np.log(1) * np.ones((N_STATES - 1, 1, 1, 1, 1, 1))
     gamma = - np.log(20) * np.ones((N_STATES - 1, N_AGES, 1, 1, 1, 1))
     mu = - np.log(100) * np.ones((N_LETHAL_STATES, N_AGES, 2, 1, 1, 1))
@@ -509,7 +512,7 @@ def run_nevergrad():
         beta,
         beta_detected_ratio,
         # beta_era_ratios,
-        sigma,
+        # sigma,
         theta,
         gamma,
         mu
@@ -522,7 +525,7 @@ def run_nevergrad():
         beta=ng.p.Array(init=beta),
         beta_detected_ratio=ng.p.Array(init=beta_detected_ratio),
         # beta_era_ratios=ng.p.Array(init=beta_era_ratios),
-        sigma=ng.p.Array(init=sigma),
+        # sigma=ng.p.Array(init=sigma),
         theta=ng.p.Array(init=theta),
         gamma=ng.p.Array(init=gamma),
         mu=ng.p.Array(init=mu),
