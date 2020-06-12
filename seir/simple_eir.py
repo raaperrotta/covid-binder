@@ -36,6 +36,16 @@ era_starts = np.array(pd.to_datetime([
 n_eras = len(era_starts) + 1
 era_indices = np.sum(np.array(t) > era_starts[:, None], axis=0) if n_eras > 1 else [0] * n_time
 
+# Calculate an estimate for new tests by smoothing total tests and taking the difference
+# Add a bias to avoid any zero test days
+# This should have very little effect since most days have at least tens of tests
+# Though it could force undetected cases toward zero just because of lack of testing
+# but that should be a weak effect
+# The detection rate will be modeled as proportional to the square root of the new test count
+new_tests = ds['tamponi'].rolling({'data': 7}, center=False, min_periods=1).mean()
+new_tests = new_tests.diff(dim='data') + 0.1
+sqrt_new_tests = np.sqrt(new_tests).values
+
 min_threshold = -100
 max_threshold = 1e7
 
@@ -46,7 +56,7 @@ def ode(initial_exposed, initial_infectious, beta, beta_detected_ratio, sigma, t
     beta_detected_ratio = beta_detected_ratio[..., era_indices]
     # Limit possible % detections to avoid negative infectious cases
     # If % detected in a single day is ever actually this high we should make a better model for theta
-    theta = np.minimum(0.95, theta * 1e-6 * ds['tamponi'].values[:, :-1])
+    theta = np.minimum(0.95, theta * 1e-2 * sqrt_new_tests)
 
     exposed = np.inf * np.ones((n_regions, n_time))
     infectious = np.inf * np.ones((n_regions, n_time))
@@ -151,13 +161,13 @@ def func(initial_exposed, initial_infectious, beta, beta_detected_ratio, sigma, 
 
 def main():
 
-    beta = 0.1 * np.ones((n_regions, n_eras))
+    beta = 0.2 * np.ones((n_regions, n_eras))
     beta_detected_ratio = 0.5 * np.ones((n_regions, n_eras))
     sigma = 0.1
-    theta = 0.1 * np.ones((n_regions, 1))
+    theta = 0.01 * np.ones((n_regions, 1))
     gamma_mu = 0.1
-    gamma_detected = 0.1
-    mu_detected = 0.01 * np.ones(n_regions)
+    gamma_detected = 0.2
+    mu_detected = 0.1 * np.ones(n_regions)
 
     initial_exposed = 200 * np.ones(n_regions)
     initial_infectious = 20 * np.ones(n_regions)
