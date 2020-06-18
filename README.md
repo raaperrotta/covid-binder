@@ -40,3 +40,21 @@ I fit all regions of Italy (except a few with very few cases overall) using neve
 
 ![Forecast deaths](forecast_deaths.png)
 ![Forecast cases](forecast_cases.png)
+
+### Further discussion
+
+#### What can be done with the model now
+- forecast outcomes in Italy by region under different what-if scenarios. The above keeps the latest parameters but we could adjust transmission rate (for example) to simulate re-opening or ask what level of transimission would be required to reduce active cases to less than 10 by September.
+- compare transmission rate over time across regions
+- estimate other model parameters, such as recovery rate or death rate.
+
+#### Possible improvements to the model
+- Reparameterize transmission rate. The current model uses a piecewise constant transmission rate that is independent between regions and eras. Some obvious extentions include adding eras, making the model piecewise linear, adding sigmoid transitions between piecewise constant eras, adding correlation between eras and/or regions.
+- Transmission between regions. Using geographical data, we could infer some proxy for transmission occurring across region borders. For example, we could buffer all regions by some margin then use the region overlap to determine a trans-region infection matrix. For aditional fidelity, this could be weighted by population density.
+- Better testing model. The inconsistent samples in theta suggest poor model performance. Because the effect of theta was capped, some of the values "ran away" becoming extremely large though having no further effect on the model than a slightly large value. This would be mitigated by a model that incorporated saturation explicitly.
+- Susceptible population. The numbers here suggest the small affect approximation was safe but for slightly improved fidelity we could explicitly model the susceptible population.
+- Improved nevergrad fit. A better starting point might improve PyMC3 results. Significant improvements were managed manually by running nevergrad iteratively and replacing, perturbing, or deleting results along the way when they seemed to get stuck in local minima. For example, when data for Lombardy stopped improving despite clearly incorrect results, we replaced them with the current best solution from Emilia-Romagna and let nevergrad improve the results from there. This process led to the current results and with more time might have led to a still better solution.
+- Latent variables. Some variation between regions could be modeled not independently as we currently do but as the result of some latent variables (population density, climate, weather, etc.).
+
+#### Using this method elsewhere
+This technique (nevergrad first, then pymc3) gives us access to the powerful uncertainty analysis of Bayesian networks despite the brittle nature of the models. We could use this technique in other areas of the world, with other data. And we could use some of the estimated parameters to constrain the model when analyzing partial datasets (for example those without tests administered).
