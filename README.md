@@ -28,8 +28,13 @@ This purposefully simple model does a reasonable job of capturing the macro tren
 
 [The final result](https://raaperrotta.github.io/covid-binder/On%20the%20effectiveness%20of%20lockdown%20measures.html#54491e41-5fef-4f3d-9f1e-4d2c85d71282) suggests that stay at home orders are the most effective in curbing transmission, followed by closing educational facilities, followed by closing non-essential businesses. A stay at home order combined with closing non-essential businesses is more effective than either, but only slightly. Travel limitations had the least impact, perhaps due to the wide variety of measures that fall into that category.
 
-### 
+### Pymc sampling on a simpler model
 
+My many efforts to make pymc3 sampling work resulted in a re-parameterized and simplified model. I removed breakdown by age and symptom level and stopped tracking the susceptible population as well as those that die or recover without being detected. This limits the model populations to those tied directly to categories in the data. This in turn allowed me to parameterize the latent true traces as the observations plus noise rather than latents observed as the data through a noise model. Because my noise model was reversible, this amounts to the same thing, but is much more efficient from an implementation perspective.
+
+I also introduced a new model element tying detection rate to the number of tests administered. See the discussion at the top of the notebook for details.
+
+I fit all regions of Italy (except a few with very few cases overall) using nevergrad to create a good starting point for pymc3. The results can be seen in [these plots](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#512274b1-e8d1-446f-903d-a14f643a35f4). Then I sampled the pymc3 equivalent of that model, saw reasonable but less than ideal convergence, and analyzed the model fit. Lastly, I used the sampled parameters to forecast the [number of deaths](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#86843fb1-efff-4283-a4b9-864ccc135435) and [number of cases](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#953350c9-fa0f-4e3f-8740-589d1474a832) over the next 12 weeks. (Plots show forecasts for Lombardia (red), Emilia-Romagna (blue), and Veneto (yellow).)
 
 ----
 
