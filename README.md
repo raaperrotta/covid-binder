@@ -36,6 +36,9 @@ I also introduced a new model element tying detection rate to the number of test
 
 I fit all regions of Italy (except a few with very few cases overall) using nevergrad to create a good starting point for pymc3. The results can be seen in [these plots](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#512274b1-e8d1-446f-903d-a14f643a35f4). Then I sampled the pymc3 equivalent of that model, saw reasonable but less than ideal convergence, and analyzed the model fit. Lastly, I used the sampled parameters to forecast the [number of deaths](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#86843fb1-efff-4283-a4b9-864ccc135435) and [number of cases](https://raaperrotta.github.io/covid-binder/Italy%20COVID-19%20Model%20-%20(S)EIR%20with%20PyMC3%20and%20Nevergrad.html#953350c9-fa0f-4e3f-8740-589d1474a832) over the next 12 weeks. (Plots show forecasts for Lombardia (red), Emilia-Romagna (blue), and Veneto (yellow).)
 
+![Forecast deaths](forecast_deaths.png)
+![Forecast cases](forecast_cases.png)
+
 ----
 
 # Raw notes:
