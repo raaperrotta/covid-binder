@@ -28,7 +28,7 @@ This purposefully simple model does a reasonable job of capturing the macro tren
 
 [The final result](https://raaperrotta.github.io/covid-binder/On%20the%20effectiveness%20of%20lockdown%20measures.html#54491e41-5fef-4f3d-9f1e-4d2c85d71282) suggests that stay at home orders are the most effective in curbing transmission, followed by closing educational facilities, followed by closing non-essential businesses. A stay at home order combined with closing non-essential businesses is more effective than either, but only slightly. Travel limitations had the least impact, perhaps due to the wide variety of measures that fall into that category.
 
-![Countermeasure effectiveness]("countermeasure effectiveness.png")
+![Countermeasure effectiveness](countermeasure%20effectiveness.png)
 
 ### Pymc sampling on a simpler model
 
